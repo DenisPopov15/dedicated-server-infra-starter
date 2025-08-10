@@ -46,6 +46,20 @@ check_root() {
     fi
 }
 
+# Function to check if Docker is already installed
+check_existing_docker() {
+    if command -v docker &> /dev/null; then
+        print_warning "Docker is already installed: $(docker --version)"
+        read -p "Do you want to continue and potentially reinstall/update? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_status "Skipping Docker installation. Will only add users to docker group if specified."
+            return 1
+        fi
+    fi
+    return 0
+}
+
 # Function to check Ubuntu version
 check_ubuntu_version() {
     if ! grep -q "Ubuntu 22.04" /etc/os-release; then
@@ -226,16 +240,31 @@ main() {
     check_root
     check_ubuntu_version
 
+    # Check if Docker is already installed
+    local skip_install=false
+    if ! check_existing_docker; then
+        skip_install=true
+    fi
+
     print_status "Starting Docker installation process..."
 
-    update_system
-    install_prerequisites
-    add_docker_gpg_key
-    add_docker_repository
-    install_docker
-    start_docker_service
-    add_users_to_docker_group "$@"
-    verify_installation
+    if [[ "$skip_install" = false ]]; then
+        update_system
+        install_prerequisites
+        add_docker_gpg_key
+        add_docker_repository
+        install_docker
+        start_docker_service
+        verify_installation
+    else
+        print_status "Skipping Docker installation steps..."
+    fi
+
+    # Always try to add users to docker group if specified
+    if [[ $# -gt 0 ]] || [[ "$skip_install" = true ]]; then
+        add_users_to_docker_group "$@"
+    fi
+
     show_post_install_instructions
 
     print_success "Installation script completed successfully!"
