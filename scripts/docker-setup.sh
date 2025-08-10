@@ -237,7 +237,7 @@ main() {
     echo "========================================"
     echo
 
-    check_root
+    # check_root
     check_ubuntu_version
 
     # Check if Docker is already installed
