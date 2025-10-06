@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Docker and Docker Compose Installation Script for Ubuntu 22.04 LTS
+# Docker and Docker Compose Installation Script for Ubuntu 22.04 LTS and 24.04 LTS
 # Usage: ./install_docker.sh [user1] [user2] [user3] ...
 # If no usernames are provided, current user will be added to docker group
 # Examples:
@@ -63,14 +63,24 @@ check_existing_docker() {
 
 # Function to check Ubuntu version
 check_ubuntu_version() {
-    if ! grep -q "Ubuntu 22.04" /etc/os-release; then
-        print_warning "This script is designed for Ubuntu 22.04 LTS. Your system might not be compatible."
-        print_status "Detected OS: $(lsb_release -d | cut -f2)"
+    local os_info=$(lsb_release -d | cut -f2)
+    local is_supported=false
+    
+    # Check for supported Ubuntu versions
+    if grep -q "Ubuntu 22.04" /etc/os-release || grep -q "Ubuntu 24.04" /etc/os-release; then
+        is_supported=true
+    fi
+    
+    if [[ "$is_supported" = false ]]; then
+        print_warning "This script is designed for Ubuntu 22.04 LTS and 24.04 LTS. Your system might not be compatible."
+        print_status "Detected OS: $os_info"
         read -p "Do you want to continue anyway? (y/N): " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
             exit 1
         fi
+    else
+        print_status "Detected supported Ubuntu version: $os_info"
     fi
 }
 
@@ -234,7 +244,7 @@ show_post_install_instructions() {
 # Main installation function
 main() {
     echo "========================================"
-    echo "Docker Installation Script for Ubuntu 22.04 LTS"
+    echo "Docker Installation Script for Ubuntu 22.04 LTS and 24.04 LTS"
     echo "========================================"
     echo
 
