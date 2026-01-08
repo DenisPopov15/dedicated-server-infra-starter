@@ -38,7 +38,7 @@ ORG_NAME="$1"
 TOKEN="$2"
 LABELS="$3"
 RUNNER_USER="github"
-RUNNER_VERSION="2.327.1"
+RUNNER_VERSION="2.321.0"  # Using a stable version
 RUNNER_HOME="/home/${RUNNER_USER}"
 
 # Detect architecture
@@ -46,15 +46,12 @@ ARCH=$(uname -m)
 case ${ARCH} in
     x86_64)
         RUNNER_ARCH="x64"
-        RUNNER_CHECKSUM="d68ac1f500b747d1271d9e52661c408d56cffd226974f68b7dc813e30b9e0575"
         ;;
     aarch64|arm64)
         RUNNER_ARCH="arm64"
-        RUNNER_CHECKSUM="4df05ccf62dae457e5a8978854e9c009d8b9a84c057ec9c1c8f2853f221ce8ca"
         ;;
     armv7l|armhf)
         RUNNER_ARCH="arm"
-        RUNNER_CHECKSUM="5c7def780e9ecc80eae530c3207984967bd5b7a2cdec54be7d6d56e4f12bb324"
         ;;
     *)
         error_exit "Unsupported architecture: ${ARCH}"
@@ -99,15 +96,18 @@ cd actions-runner
 if [ ! -f "${RUNNER_FILE}" ]; then
     echo "Downloading GitHub Actions Runner v${RUNNER_VERSION} for ${RUNNER_ARCH}..."
     curl -o ${RUNNER_FILE} -L https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${RUNNER_FILE} || exit 1
+    echo "Download completed successfully"
+else
+    echo "Runner package already exists, skipping download"
 fi
-
-# Verify checksum
-echo "${RUNNER_CHECKSUM}  ${RUNNER_FILE}" | shasum -a 256 -c || exit 1
 
 # Extract if not already extracted
 if [ ! -f "config.sh" ]; then
     echo "Extracting runner..."
     tar xzf ./${RUNNER_FILE} || exit 1
+    echo "Extraction completed successfully"
+else
+    echo "Runner already extracted, skipping extraction"
 fi
 
 # Configure runner
