@@ -3,12 +3,12 @@
 # GitHub Actions Runner Setup Script
 #
 # Usage:
-#   Local: ./runer-setup.sh <orgName> <token> <labels>
+#   Local: ./runner-setup.sh <orgName> <token> <labels>
 #   Remote: curl -s <script-url> | bash -s <orgName> <token> <labels>
 #
 # Examples:
-#   ./runer-setup.sh my-org ghp_xxxxxxxxxxxx deployment,development
-#   curl -s https://example.com/runer-setup.sh | sudo bash -s my-org ghp_xxxxxxxxxxxx deployment,development
+#   ./runner-setup.sh my-org ghp_xxxxxxxxxxxx deployment,development
+#   curl -s https://example.com/runner-setup.sh | sudo bash -s my-org ghp_xxxxxxxxxxxx deployment,development
 #
 # Prerequisites:
 #   - Must run as root (use sudo)
@@ -41,9 +41,32 @@ RUNNER_USER="github"
 RUNNER_VERSION="2.327.1"
 RUNNER_HOME="/home/${RUNNER_USER}"
 
+# Detect architecture
+ARCH=$(uname -m)
+case ${ARCH} in
+    x86_64)
+        RUNNER_ARCH="x64"
+        RUNNER_CHECKSUM="d68ac1f500b747d1271d9e52661c408d56cffd226974f68b7dc813e30b9e0575"
+        ;;
+    aarch64|arm64)
+        RUNNER_ARCH="arm64"
+        RUNNER_CHECKSUM="4df05ccf62dae457e5a8978854e9c009d8b9a84c057ec9c1c8f2853f221ce8ca"
+        ;;
+    armv7l|armhf)
+        RUNNER_ARCH="arm"
+        RUNNER_CHECKSUM="5c7def780e9ecc80eae530c3207984967bd5b7a2cdec54be7d6d56e4f12bb324"
+        ;;
+    *)
+        error_exit "Unsupported architecture: ${ARCH}"
+        ;;
+esac
+
+RUNNER_FILE="actions-runner-linux-${RUNNER_ARCH}-${RUNNER_VERSION}.tar.gz"
+
 log "Starting GitHub Actions Runner setup..."
 log "Organization: ${ORG_NAME}"
 log "Labels: ${LABELS}"
+log "Detected architecture: ${ARCH} (using ${RUNNER_ARCH} runner)"
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
@@ -73,18 +96,18 @@ fi
 cd actions-runner
 
 # Download runner if not already present
-if [ ! -f "actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" ]; then
-    echo "Downloading GitHub Actions Runner v${RUNNER_VERSION}..."
-    curl -o actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz -L https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz || exit 1
+if [ ! -f "${RUNNER_FILE}" ]; then
+    echo "Downloading GitHub Actions Runner v${RUNNER_VERSION} for ${RUNNER_ARCH}..."
+    curl -o ${RUNNER_FILE} -L https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/${RUNNER_FILE} || exit 1
 fi
 
 # Verify checksum
-echo "d68ac1f500b747d1271d9e52661c408d56cffd226974f68b7dc813e30b9e0575  actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz" | shasum -a 256 -c || exit 1
+echo "${RUNNER_CHECKSUM}  ${RUNNER_FILE}" | shasum -a 256 -c || exit 1
 
 # Extract if not already extracted
 if [ ! -f "config.sh" ]; then
     echo "Extracting runner..."
-    tar xzf ./actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz || exit 1
+    tar xzf ./${RUNNER_FILE} || exit 1
 fi
 
 # Configure runner
