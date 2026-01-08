@@ -151,12 +151,19 @@ add_users_to_docker_group() {
     # If no users specified, use current user (but not if running as root)
     if [[ ${#users[@]} -eq 0 ]]; then
         if [[ $EUID -eq 0 ]]; then
-            print_error "When running as root, you must specify at least one username as an argument."
-            print_status "Usage: $0 [user1] [user2] [user3] ..."
-            print_status "Example: $0 alice bob github"
-            exit 1
+            # Running as root with no arguments - check if github user exists and add it automatically
+            if id "github" &>/dev/null; then
+                print_status "Detected GitHub Actions runner user 'github', adding to docker group automatically"
+                users=("github")
+            else
+                print_error "When running as root, you must specify at least one username as an argument."
+                print_status "Usage: $0 [user1] [user2] [user3] ..."
+                print_status "Example: $0 alice bob github"
+                exit 1
+            fi
+        else
+            users=("$USER")
         fi
-        users=("$USER")
     fi
 
     print_status "Adding users to docker group..."
@@ -186,12 +193,34 @@ add_users_to_docker_group() {
         print_success "Successfully added ${#added_users[@]} user(s) to docker group:"
         printf '  - %s\n' "${added_users[@]}"
         print_warning "These users need to log out and back in (or restart) for group changes to take effect"
+
+        # Restart GitHub Actions runner service if github user was added
+        if [[ " ${added_users[@]} " =~ " github " ]]; then
+            restart_github_runner
+        fi
     fi
 
     if [[ ${#failed_users[@]} -gt 0 ]]; then
         echo
         print_warning "Failed to add ${#failed_users[@]} user(s):"
         printf '  - %s\n' "${failed_users[@]}"
+    fi
+}
+
+# Function to restart GitHub Actions runner service
+restart_github_runner() {
+    print_status "Checking for GitHub Actions runner service..."
+
+    if sudo systemctl list-units --full -all | grep -q "actions.runner"; then
+        print_status "GitHub Actions runner service detected, restarting to apply docker group permissions..."
+        if sudo systemctl restart actions.runner.* 2>/dev/null; then
+            print_success "GitHub Actions runner service restarted successfully"
+        else
+            print_warning "Failed to restart runner service automatically"
+            print_status "You can manually restart it with: sudo systemctl restart actions.runner.*"
+        fi
+    else
+        print_status "No GitHub Actions runner service detected, skipping restart"
     fi
 }
 
