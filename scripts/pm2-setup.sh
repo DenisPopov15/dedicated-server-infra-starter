@@ -1,0 +1,181 @@
+#!/bin/bash
+
+# PM2 Setup Script for Node.js Applications
+# This script installs PM2 (if not already installed), sets up the application,
+# and configures PM2 to start on system reboot
+# Usage: ./pm2-setup.sh /path/to/your/project
+# Example: ./pm2-setup.sh /home/pi/your-project
+
+set -euo pipefail  # Exit on error, undefined vars, pipe failures
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
+
+# Function to log messages
+log() {
+    echo -e "${BLUE}[INFO]${NC} $1" >&2
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1" >&2
+}
+
+log_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1" >&2
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1" >&2
+}
+
+# Function to log errors and exit
+error_exit() {
+    log_error "$1"
+    exit 1
+}
+
+# Check if project path is provided
+if [ $# -eq 0 ]; then
+    log_error "Project path is required!"
+    echo "Usage: $0 /path/to/your/project"
+    echo "Example: $0 /home/pi/your-project"
+    exit 1
+fi
+
+PROJECT_PATH="$1"
+
+# Validate project path
+if [ ! -d "$PROJECT_PATH" ]; then
+    error_exit "Project path does not exist: $PROJECT_PATH"
+fi
+
+log "Starting PM2 setup for project at: $PROJECT_PATH"
+
+# Check if PM2 is already installed
+if command -v pm2 &> /dev/null; then
+    PM2_VERSION=$(pm2 --version)
+    log_success "PM2 is already installed: v$PM2_VERSION"
+else
+    log "PM2 is not installed. Installing PM2 globally..."
+    
+    # Check if npm is available
+    if ! command -v npm &> /dev/null; then
+        error_exit "npm is not installed. Please install Node.js and npm first."
+    fi
+    
+    # Install PM2 globally
+    if npm install -g pm2; then
+        log_success "PM2 installed successfully: v$(pm2 --version)"
+    else
+        error_exit "Failed to install PM2. Make sure you have proper permissions (may need sudo)."
+    fi
+fi
+
+# Navigate to project directory
+log "Navigating to project directory: $PROJECT_PATH"
+cd "$PROJECT_PATH" || error_exit "Failed to navigate to project directory: $PROJECT_PATH"
+
+# Create logs directory
+log "Creating logs directory..."
+if mkdir -p logs; then
+    log_success "Logs directory created/verified: $(pwd)/logs"
+else
+    error_exit "Failed to create logs directory"
+fi
+
+# Check if ecosystem.config.js exists
+if [ ! -f "ecosystem.config.js" ]; then
+    error_exit "ecosystem.config.js not found in project directory: $PROJECT_PATH"
+else
+    log_success "Found ecosystem.config.js"
+fi
+
+# Stop any existing PM2 processes for this app (if any)
+log "Checking for existing PM2 processes..."
+if pm2 list | grep -q "telegram-bot"; then
+    log_warning "Found existing 'telegram-bot' process. Stopping it..."
+    pm2 stop telegram-bot || true
+    pm2 delete telegram-bot || true
+fi
+
+# Start application with PM2
+log "Starting application with PM2..."
+if pm2 start ecosystem.config.js --env production; then
+    log_success "Application started with PM2"
+else
+    error_exit "Failed to start application with PM2. Check ecosystem.config.js configuration."
+fi
+
+# Display PM2 status
+log "PM2 process status:"
+pm2 list
+
+# Setup PM2 to start on system reboot
+log "Setting up PM2 to start on system reboot..."
+
+# Get the startup command from PM2
+STARTUP_CMD=$(pm2 startup | grep -E "sudo.*pm2" || true)
+
+if [ -n "$STARTUP_CMD" ]; then
+    log "PM2 startup command generated. Executing it..."
+    log_warning "You may be prompted for your sudo password"
+    
+    # Execute the startup command
+    if eval "$STARTUP_CMD"; then
+        log_success "PM2 startup script installed successfully"
+    else
+        log_warning "Failed to execute PM2 startup command automatically"
+        log_warning "Please run the following command manually:"
+        echo "$STARTUP_CMD"
+    fi
+else
+    log_warning "Could not generate PM2 startup command automatically"
+    log_warning "Please run 'pm2 startup' manually and execute the command it shows"
+fi
+
+# Save PM2 process list
+log "Saving PM2 process list..."
+if pm2 save; then
+    log_success "PM2 process list saved"
+else
+    log_warning "Failed to save PM2 process list"
+fi
+
+# Install PM2 server monitoring module
+log "Installing PM2 server monitoring module..."
+if pm2 install pm2-server-monit; then
+    log_success "PM2 server monitoring module installed successfully"
+else
+    log_warning "Failed to install PM2 server monitoring module"
+fi
+
+# Configure PM2 server monitoring
+log "Configuring PM2 server monitoring..."
+pm2 set pm2-server-monit:cpu true
+pm2 set pm2-server-monit:memory true
+pm2 set pm2-server-monit:network true
+pm2 set pm2-server-monit:disk false
+pm2 set pm2-server-monit:interval 20
+log_success "PM2 server monitoring configured"
+
+
+# Display final status
+log_success "PM2 setup completed successfully!"
+echo ""
+log "PM2 process information:"
+pm2 list
+echo ""
+log "Useful PM2 commands:"
+log "  - View logs: pm2 logs"
+log "  - View logs (specific app): pm2 logs telegram-bot"
+log "  - Monitor: pm2 monit"
+log "  - Restart: pm2 restart telegram-bot"
+log "  - Stop: pm2 stop telegram-bot"
+log "  - Status: pm2 status"
+log "  - Save current list: pm2 save"
+echo ""
+log_success "Your application is now running with PM2 and will start automatically on system reboot!"
