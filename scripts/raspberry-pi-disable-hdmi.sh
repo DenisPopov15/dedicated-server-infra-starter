@@ -177,20 +177,55 @@ verify_changes() {
     fi
 }
 
+# Function to disable HDMI immediately (before reboot)
+disable_hdmi_immediately() {
+    log "Disabling HDMI output immediately..."
+    
+    # Try using vcgencmd (modern method, preferred)
+    if command -v vcgencmd >/dev/null 2>&1; then
+        log "Using vcgencmd to disable HDMI..."
+        if vcgencmd display_power 0 >/dev/null 2>&1; then
+            log_success "HDMI output disabled immediately using vcgencmd"
+            return 0
+        else
+            log_warning "vcgencmd display_power 0 failed, trying alternative method..."
+        fi
+    fi
+    
+    # Fallback: Try using tvservice (older method, deprecated but may work)
+    if command -v tvservice >/dev/null 2>&1; then
+        log "Using tvservice to disable HDMI..."
+        if tvservice -o >/dev/null 2>&1; then
+            log_success "HDMI output disabled immediately using tvservice"
+            return 0
+        else
+            log_warning "tvservice -o failed"
+        fi
+    fi
+    
+    # If both methods fail, warn but don't exit (config changes will still work after reboot)
+    log_warning "Could not disable HDMI immediately. HDMI will be disabled after reboot."
+    log_warning "This may be normal if HDMI is already off or not connected."
+    return 1
+}
+
 # Function to display post-installation instructions
 show_post_install_instructions() {
     echo
     log_success "HDMI disable configuration completed!"
     echo
-    log_warning "IMPORTANT: A system reboot is required for changes to take effect"
+    log_success "HDMI output has been disabled immediately (takes effect now)"
+    log_warning "IMPORTANT: A system reboot is recommended to ensure permanent persistence"
     echo
     log "Post-installation steps:"
-    echo "1. Reboot your Raspberry Pi: sudo reboot"
-    echo "2. After reboot, HDMI output will be permanently disabled"
-    echo "3. To re-enable HDMI in the future, edit the boot config file and remove or comment out:"
+    echo "1. HDMI is already disabled and will remain off"
+    echo "2. Reboot your Raspberry Pi to ensure settings persist: sudo reboot"
+    echo "3. After reboot, HDMI output will remain permanently disabled via boot configuration"
+    echo "4. To re-enable HDMI in the future, edit the boot config file and remove or comment out:"
     echo "   - hdmi_blanking=1"
     echo "   - hdmi_ignore_hotplug=1"
     echo "   - hdmi_force_hotplug=0"
+    echo "   Then run: vcgencmd display_power 1 (or reboot)"
     echo
     log "Configuration file location: $CONFIG_FILE"
     log "Backup file location: $BACKUP_FILE"
@@ -235,11 +270,14 @@ main() {
         error_exit "Failed to disable HDMI. Configuration restored from backup."
     fi
     
+    # Disable HDMI immediately (before reboot)
+    disable_hdmi_immediately
+    
     # Show post-installation instructions
     show_post_install_instructions
     
     log_success "Script completed successfully!"
-    log_warning "Remember to reboot for changes to take effect: sudo reboot"
+    log "HDMI is now disabled. Reboot recommended for permanent persistence: sudo reboot"
 }
 
 # Run main function
