@@ -61,6 +61,66 @@ check_existing_docker() {
     return 0
 }
 
+# Function to wait for apt lock to be released
+wait_for_apt_lock() {
+    local max_wait=300  # Maximum wait time in seconds (5 minutes)
+    local wait_time=0
+    local lock_files=(
+        "/var/lib/apt/lists/lock"
+        "/var/lib/dpkg/lock-frontend"
+        "/var/lib/dpkg/lock"
+        "/var/cache/apt/archives/lock"
+    )
+    
+    print_status "Checking for apt locks..."
+    
+    while [[ $wait_time -lt $max_wait ]]; do
+        local lock_found=false
+        
+        # Check for running apt/dpkg processes first (most reliable)
+        if pgrep -x "apt-get|apt|dpkg" > /dev/null 2>&1; then
+            lock_found=true
+            local processes=$(pgrep -x "apt-get|apt|dpkg" | tr '\n' ' ')
+            print_status "Waiting for apt/dpkg processes to finish (PIDs: $processes)..."
+        else
+            # Check if any lock file exists and is locked
+            for lock_file in "${lock_files[@]}"; do
+                if [[ -f "$lock_file" ]]; then
+                    # Check if there's a process holding the lock (if lsof is available)
+                    if command -v lsof &> /dev/null; then
+                        local lock_pid=$(lsof -t "$lock_file" 2>/dev/null || true)
+                        if [[ -n "$lock_pid" ]]; then
+                            lock_found=true
+                            local process_name=$(ps -p "$lock_pid" -o comm= 2>/dev/null || echo "unknown")
+                            print_status "Waiting for apt lock to be released (held by process $lock_pid: $process_name)..."
+                            break
+                        fi
+                    else
+                        # If lsof is not available, assume lock is held if file exists
+                        # Wait a bit and check if it's still there
+                        lock_found=true
+                        print_status "Waiting for apt lock file to be released: $lock_file..."
+                        break
+                    fi
+                fi
+            done
+        fi
+        
+        if [[ "$lock_found" = false ]]; then
+            print_success "Apt locks released, proceeding..."
+            return 0
+        fi
+        
+        sleep 2
+        wait_time=$((wait_time + 2))
+    done
+    
+    print_error "Timeout waiting for apt locks to be released after ${max_wait} seconds"
+    print_status "You may need to manually check and kill any stuck apt processes"
+    print_status "Check with: sudo ps aux | grep -E 'apt|dpkg'"
+    return 1
+}
+
 # Function to check Ubuntu version
 check_ubuntu_version() {
     local os_info=$(lsb_release -d | cut -f2)
@@ -86,6 +146,7 @@ check_ubuntu_version() {
 
 # Function to update system
 update_system() {
+    wait_for_apt_lock
     print_status "Updating system packages..."
     sudo apt update
     sudo apt upgrade -y
@@ -94,6 +155,7 @@ update_system() {
 
 # Function to install prerequisites
 install_prerequisites() {
+    wait_for_apt_lock
     print_status "Installing prerequisites..."
     sudo apt install -y \
         apt-transport-https \
@@ -116,6 +178,7 @@ add_docker_gpg_key() {
 
 # Function to add Docker repository
 add_docker_repository() {
+    wait_for_apt_lock
     print_status "Adding Docker repository..."
     echo \
         "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
@@ -126,6 +189,7 @@ add_docker_repository() {
 
 # Function to install Docker
 install_docker() {
+    wait_for_apt_lock
     print_status "Installing Docker..."
     sudo apt install -y \
         docker-ce \
