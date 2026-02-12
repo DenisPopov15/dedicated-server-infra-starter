@@ -74,14 +74,20 @@ wait_for_apt_lock() {
     
     print_status "Checking for apt locks..."
     
+    # Check if unattended-upgrades is running (common cause of locks)
+    if systemctl is-active --quiet unattended-upgrades 2>/dev/null; then
+        print_status "Detected unattended-upgrades service is active. This may cause apt locks."
+    fi
+    
     while [[ $wait_time -lt $max_wait ]]; do
         local lock_found=false
         
         # Check for running apt/dpkg processes first (most reliable)
-        if pgrep -x "apt-get|apt|dpkg" > /dev/null 2>&1; then
+        if pgrep -x "apt-get|apt|dpkg|unattended-upgrades" > /dev/null 2>&1; then
             lock_found=true
-            local processes=$(pgrep -x "apt-get|apt|dpkg" | tr '\n' ' ')
-            print_status "Waiting for apt/dpkg processes to finish (PIDs: $processes)..."
+            local processes=$(pgrep -x "apt-get|apt|dpkg|unattended-upgrades" | tr '\n' ' ')
+            local process_names=$(ps -p $(pgrep -x "apt-get|apt|dpkg|unattended-upgrades" | tr '\n' ',' | sed 's/,$//') -o comm= 2>/dev/null | tr '\n' ',' | sed 's/,$//' || echo "unknown")
+            print_status "Waiting for package manager processes to finish (PIDs: $processes, processes: $process_names)..."
         else
             # Check if any lock file exists and is locked
             for lock_file in "${lock_files[@]}"; do
@@ -107,8 +113,14 @@ wait_for_apt_lock() {
         fi
         
         if [[ "$lock_found" = false ]]; then
-            print_success "Apt locks released, proceeding..."
+            print_success "Apt locks released, proceeding with Docker installation..."
             return 0
+        fi
+        
+        # Show progress every 10 seconds
+        if [[ $((wait_time % 10)) -eq 0 ]] && [[ $wait_time -gt 0 ]]; then
+            local remaining=$((max_wait - wait_time))
+            print_status "Still waiting... (${remaining}s remaining)"
         fi
         
         sleep 2
@@ -116,8 +128,13 @@ wait_for_apt_lock() {
     done
     
     print_error "Timeout waiting for apt locks to be released after ${max_wait} seconds"
-    print_status "You may need to manually check and kill any stuck apt processes"
-    print_status "Check with: sudo ps aux | grep -E 'apt|dpkg'"
+    print_status "This may happen if:"
+    print_status "  - Automatic system updates are running (unattended-upgrades)"
+    print_status "  - Another package installation is in progress"
+    print_status "  - A previous installation was interrupted"
+    print_status ""
+    print_status "You can check running processes with: sudo ps aux | grep -E 'apt|dpkg'"
+    print_status "You can check unattended-upgrades with: sudo systemctl status unattended-upgrades"
     return 1
 }
 
