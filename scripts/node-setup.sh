@@ -101,23 +101,49 @@ get_libstdcxx_version() {
         return 1
     fi
     
-    # Extract GLIBCXX versions, filter out non-version strings, and get the highest
-    local available_versions
-    available_versions=$(strings "$libstdcxx_path" 2>/dev/null | grep "^GLIBCXX_[0-9]" | sed 's/GLIBCXX_//' | sort -V -t. -k1,1n -k2,2n -k3,3n | tail -n 1 || echo "")
+    # Extract GLIBCXX versions - process line by line to be more defensive
+    local max_version=""
+    local max_major=0 max_minor=0 max_patch=0
     
-    if [ -z "$available_versions" ]; then
-        echo ""
-        return 1
+    while IFS= read -r line; do
+        # Only process lines that match GLIBCXX_X.Y or GLIBCXX_X.Y.Z pattern exactly
+        if echo "$line" | grep -qE "^GLIBCXX_[0-9]+\.[0-9]+(\.[0-9]+)?$"; then
+            # Extract version part (remove GLIBCXX_ prefix)
+            local version_part
+            version_part=$(echo "$line" | sed 's/^GLIBCXX_//')
+            
+            # Validate it's a proper version
+            if echo "$version_part" | grep -qE "^[0-9]+\.[0-9]+(\.[0-9]+)?$"; then
+                # Parse version components
+                local major minor patch
+                major=$(echo "$version_part" | cut -d. -f1)
+                minor=$(echo "$version_part" | cut -d. -f2)
+                patch=$(echo "$version_part" | cut -d. -f3)
+                patch="${patch:-0}"
+                
+                # Validate components are numeric
+                if [[ "$major" =~ ^[0-9]+$ ]] && [[ "$minor" =~ ^[0-9]+$ ]] && [[ "$patch" =~ ^[0-9]+$ ]]; then
+                    # Compare and keep maximum
+                    if [ "$major" -gt "$max_major" ] || \
+                       ([ "$major" -eq "$max_major" ] && [ "$minor" -gt "$max_minor" ]) || \
+                       ([ "$major" -eq "$max_major" ] && [ "$minor" -eq "$max_minor" ] && [ "$patch" -gt "$max_patch" ]); then
+                        max_major=$major
+                        max_minor=$minor
+                        max_patch=$patch
+                        max_version="$version_part"
+                    fi
+                fi
+            fi
+        fi
+    done < <(strings "$libstdcxx_path" 2>/dev/null)
+    
+    if [ -n "$max_version" ]; then
+        echo "$max_version"
+        return 0
     fi
     
-    # Validate it looks like a version number (e.g., 3.4.26)
-    if ! echo "$available_versions" | grep -qE "^[0-9]+\.[0-9]+(\.[0-9]+)?$"; then
-        echo ""
-        return 1
-    fi
-    
-    echo "$available_versions"
-    return 0
+    echo ""
+    return 1
 }
 
 # Function to check if version meets requirement
@@ -242,6 +268,18 @@ check_libstdcxx_compatibility() {
     
     if [ -z "$current_version" ]; then
         log_warning "Could not determine libstdc++ version, proceeding anyway"
+        return 0
+    fi
+    
+    # Validate the version looks correct (should be like 3.4.26)
+    if ! echo "$current_version" | grep -qE "^[0-9]+\.[0-9]+(\.[0-9]+)?$"; then
+        log_warning "Invalid libstdc++ version format detected: '$current_version', proceeding anyway"
+        return 0
+    fi
+    
+    # Additional sanity check - version should be reasonable
+    if [ "$current_version" = "DEBUG_MESSAGE_LENGTH" ] || [ ${#current_version} -gt 20 ] || [ ${#current_version} -lt 3 ]; then
+        log_warning "Suspicious libstdc++ version detected: '$current_version', proceeding anyway"
         return 0
     fi
     
