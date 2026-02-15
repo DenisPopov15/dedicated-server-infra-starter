@@ -83,7 +83,53 @@ apt update || {
 }
 
 log "Installing prerequisites..."
-apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+# Check which packages are already installed and only install what's missing
+PACKAGES_TO_INSTALL=()
+for pkg in debian-keyring debian-archive-keyring apt-transport-https curl; do
+    if ! dpkg -l | grep -q "^ii  $pkg " 2>/dev/null; then
+        PACKAGES_TO_INSTALL+=("$pkg")
+    else
+        log "Package $pkg is already installed, skipping..."
+    fi
+done
+
+# Install missing packages, but continue even if some fail (common with old Raspbian repos)
+if [ ${#PACKAGES_TO_INSTALL[@]} -gt 0 ]; then
+    log "Installing missing packages: ${PACKAGES_TO_INSTALL[*]}..."
+    # Try to install packages, but don't fail if some repositories are unavailable
+    # Temporarily allow command to fail without exiting script
+    set +e
+    apt install -y "${PACKAGES_TO_INSTALL[@]}" 2>&1 | grep -v "404  Not Found" || {
+        log_warning "Some packages failed to install from the old repository"
+        log_warning "This is common with older Raspbian versions - checking what's actually needed..."
+    }
+    INSTALL_EXIT_CODE=$?
+    set -e
+    
+    # Verify critical packages are available
+    MISSING_CRITICAL=false
+    for pkg in curl; do
+        if ! command -v "$pkg" &> /dev/null && ! dpkg -l | grep -q "^ii  $pkg " 2>/dev/null; then
+            log_error "Critical package $pkg is not installed and cannot be installed"
+            MISSING_CRITICAL=true
+        fi
+    done
+    
+    if [ "$MISSING_CRITICAL" = true ]; then
+        error_exit "Critical packages are missing. Please update your repository sources or install manually."
+    fi
+    
+    # For optional packages, just warn if they're missing
+    # Note: apt-transport-https is often built into modern apt, so it may not be needed
+    # debian-keyring and debian-archive-keyring are helpful but not always critical
+    for pkg in debian-keyring debian-archive-keyring apt-transport-https; do
+        if ! dpkg -l | grep -q "^ii  $pkg " 2>/dev/null; then
+            log_warning "Optional package $pkg is not installed, but may not be required for Caddy installation"
+        fi
+    done
+else
+    log "All prerequisite packages are already installed"
+fi
 
 log "Adding Caddy repository..."
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
