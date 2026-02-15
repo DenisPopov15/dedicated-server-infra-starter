@@ -486,45 +486,62 @@ verify_installation() {
         error_exit "Failed to source NVM for verification"
     fi
     
-    local verification_failed=0
-    local library_issue=0
-    
-    # Check Node.js version
-    if command -v node &> /dev/null; then
-        local node_output exit_code
+    # First, check if Node.js actually works (quick check)
+    if verify_node_works; then
+        # Node.js works, get version and verify
+        local node_output
         node_output=$(node --version 2>&1)
-        exit_code=$?
+        NODE_VER=$(echo "$node_output" | head -n 1 | tr -d '\n\r')
+        log_success "Node.js version: $NODE_VER"
         
-        # Check if output contains GLIBCXX error
-        if echo "$node_output" | grep -q "GLIBCXX"; then
-            log_error "Node.js is installed but cannot run due to incompatible system libraries (GLIBCXX)"
-            log_error "Please run: sudo apt-get update && sudo apt-get install libstdc++6"
-            log_warning "Node.js files are installed, but the binary cannot execute due to missing library version"
-            library_issue=1
-            verification_failed=1
-        elif [ $exit_code -ne 0 ]; then
-            log_error "Failed to get Node.js version: $node_output"
-            verification_failed=1
+        # Verify it's the correct version
+        if [ "$NODE_VER" = "$NODE_VERSION" ]; then
+            log_success "Correct Node.js version is active: $NODE_VER"
         else
-            # Success - extract version
-            NODE_VER=$(echo "$node_output" | head -n 1 | tr -d '\n\r')
-            log_success "Node.js version: $NODE_VER"
-            
-            # Verify it's the correct version
-            if [ "$NODE_VER" = "$NODE_VERSION" ]; then
-                log_success "Correct Node.js version is active: $NODE_VER"
-            else
-                log_warning "Node.js version is $NODE_VER, expected $NODE_VERSION"
-                log_warning "You may need to run: nvm use $NODE_VERSION"
-            fi
+            log_warning "Node.js version is $NODE_VER, expected $NODE_VERSION"
+            log_warning "You may need to run: nvm use $NODE_VERSION"
         fi
     else
-        log_error "Node.js command not found after installation"
-        verification_failed=1
+        # Node.js doesn't work, check why
+        local verification_failed=0
+        local library_issue=0
+        
+        if command -v node &> /dev/null; then
+            local node_output exit_code
+            node_output=$(node --version 2>&1)
+            exit_code=$?
+            
+            # Check if output contains GLIBCXX error
+            if echo "$node_output" | grep -q "GLIBCXX"; then
+                log_error "Node.js is installed but cannot run due to incompatible system libraries (GLIBCXX)"
+                library_issue=1
+                verification_failed=1
+            elif [ $exit_code -ne 0 ]; then
+                log_error "Failed to get Node.js version: $node_output"
+                verification_failed=1
+            fi
+        else
+            log_error "Node.js command not found after installation"
+            verification_failed=1
+        fi
+        
+        # If there's a library issue, this is a real problem (should have been fixed earlier)
+        if [ $library_issue -eq 1 ]; then
+            log_error "Node.js cannot run due to GLIBCXX library issue"
+            log_error "This should have been fixed during installation. Please run manually:"
+            log_error "  sudo apt-get update && sudo apt-get upgrade && sudo apt-get install libstdc++6"
+            log_error "Or rebuild from source: nvm uninstall $NODE_VERSION && nvm install -s $NODE_VERSION"
+            error_exit "Node.js installation verification failed - Node.js cannot run due to library compatibility issues"
+        fi
+        
+        # If verification failed for other reasons, exit with error
+        if [ $verification_failed -eq 1 ]; then
+            error_exit "Installation verification failed"
+        fi
     fi
     
     # Check npm version (only if node works)
-    if [ $library_issue -eq 0 ] && command -v npm &> /dev/null; then
+    if verify_node_works && command -v npm &> /dev/null; then
         local npm_output
         npm_output=$(npm --version 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || echo "")
         if [ -n "$npm_output" ] && ! echo "$npm_output" | grep -q "GLIBCXX"; then
@@ -533,49 +550,14 @@ verify_installation() {
         else
             log_warning "Could not verify npm version (may be due to library compatibility issue)"
         fi
-    elif [ $library_issue -eq 1 ]; then
-        log_warning "npm verification skipped due to library compatibility issue"
     else
-        log_warning "npm command not found (this may be normal if Node.js installation had issues)"
+        log_warning "npm verification skipped (Node.js may not be working or npm not found)"
     fi
     
     # Check nvm version
     if command -v nvm &> /dev/null; then
         NVM_VER=$(nvm --version 2>&1 | grep -v "tput: unknown terminal" | head -n 1 | tr -d '\n\r' || echo "unknown")
         log_success "NVM version: $NVM_VER"
-    fi
-    
-    # If there's a library issue, try to fix it
-    if [ $library_issue -eq 1 ]; then
-        log_error "Node.js cannot run due to GLIBCXX library issue"
-        log "This should have been fixed earlier, but attempting fix now..."
-        
-        # Try updating libraries
-        if try_update_libstdcxx; then
-            sleep 1
-            # Recheck
-            node_output=$(node --version 2>&1)
-            exit_code=$?
-            if [ $exit_code -eq 0 ] && ! echo "$node_output" | grep -q "GLIBCXX"; then
-                log_success "Node.js now works after library update!"
-                library_issue=0
-                verification_failed=0
-            fi
-        fi
-        
-        # If still not working, this is a real problem
-        if [ $library_issue -eq 1 ]; then
-            log_error "Could not automatically fix GLIBCXX issue"
-            log_error "Node.js is installed but cannot run"
-            log_error "Please run manually: sudo apt-get update && sudo apt-get upgrade && sudo apt-get install libstdc++6"
-            log_error "Or rebuild from source: nvm uninstall $NODE_VERSION && nvm install -s $NODE_VERSION"
-            error_exit "Node.js installation verification failed - Node.js cannot run due to library compatibility issues"
-        fi
-    fi
-    
-    # If verification failed for other reasons, exit with error
-    if [ $verification_failed -eq 1 ]; then
-        error_exit "Installation verification failed"
     fi
 }
 
@@ -650,55 +632,50 @@ main() {
         nvm use "$NODE_VERSION" || log_warning "Failed to switch to Node.js $NODE_VERSION"
         
         # Check if Node.js actually works (not just installed)
-        if ! verify_node_works; then
+        local node_works=0
+        if verify_node_works; then
+            node_works=1
+            log_success "Node.js $NODE_VERSION is installed and working"
+        else
             local node_error
             node_error=$(node --version 2>&1 || echo "")
             if echo "$node_error" | grep -q "GLIBCXX"; then
                 log_error "Node.js $NODE_VERSION is installed but cannot run due to GLIBCXX library issue"
                 log "Attempting to fix the issue..."
                 
+                local fix_attempted=1
+                local fix_succeeded=0
+                
                 # Try updating libraries first
                 if try_update_libstdcxx; then
-                    sleep 1
+                    sleep 2  # Give system time to update libraries
+                    # Re-source nvm and try again
+                    source_nvm
+                    nvm use "$NODE_VERSION" &>/dev/null || true
                     if verify_node_works; then
                         log_success "Node.js now works after library update!"
+                        node_works=1
+                        fix_succeeded=1
                     else
                         log "Library update didn't help, trying to rebuild from source..."
-                        # Need to rebuild from source
-                        if ! command -v make &>/dev/null || ! command -v g++ &>/dev/null; then
-                            log "Installing build tools..."
-                            if command -v apt-get &>/dev/null; then
-                                sudo apt-get update -qq 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
-                                sudo apt-get install -y build-essential python3 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || {
-                                    log_error "Failed to install build tools"
-                                }
-                            fi
-                        fi
-                        
-                        log "Removing broken binary installation..."
-                        nvm uninstall "$NODE_VERSION" 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
-                        
-                        log "Building Node.js $NODE_VERSION from source (this may take 10-30 minutes)..."
-                        if nvm install -s "$NODE_VERSION" 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:"; then
-                            if verify_node_works; then
-                                log_success "Node.js rebuilt from source and now works!"
-                            else
-                                error_exit "Node.js rebuilt but still cannot run"
-                            fi
-                        else
-                            error_exit "Failed to rebuild Node.js from source"
-                        fi
                     fi
-                else
-                    # Update failed, try building from source
-                    log "Library update failed or insufficient, trying to rebuild from source..."
+                fi
+                
+                # If library update didn't work, rebuild from source
+                if [ $node_works -eq 0 ]; then
+                    # Need to rebuild from source
                     if ! command -v make &>/dev/null || ! command -v g++ &>/dev/null; then
                         log "Installing build tools..."
                         if command -v apt-get &>/dev/null; then
-                            sudo apt-get update -qq 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
-                            sudo apt-get install -y build-essential python3 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || {
+                            if sudo apt-get update -qq 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" && \
+                               sudo apt-get install -y build-essential python3 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:"; then
+                                log_success "Build tools installed"
+                            else
                                 log_error "Failed to install build tools"
-                            }
+                                error_exit "Cannot rebuild Node.js without build tools. Please install manually: sudo apt-get install build-essential python3"
+                            fi
+                        else
+                            error_exit "Cannot install build tools automatically. Please install build-essential and python3 manually."
                         fi
                     fi
                     
@@ -707,17 +684,31 @@ main() {
                     
                     log "Building Node.js $NODE_VERSION from source (this may take 10-30 minutes)..."
                     if nvm install -s "$NODE_VERSION" 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:"; then
+                        # Re-source and verify
+                        source_nvm
+                        nvm use "$NODE_VERSION" &>/dev/null || true
                         if verify_node_works; then
                             log_success "Node.js rebuilt from source and now works!"
+                            node_works=1
+                            fix_succeeded=1
                         else
-                            error_exit "Node.js rebuilt but still cannot run"
+                            log_error "Node.js rebuilt but still cannot run"
+                            local rebuild_error
+                            rebuild_error=$(node --version 2>&1 || echo "")
+                            log_error "Error: $rebuild_error"
                         fi
                     else
-                        error_exit "Failed to rebuild Node.js from source"
+                        log_error "Failed to rebuild Node.js from source"
                     fi
+                fi
+                
+                # If we tried to fix but it still doesn't work, exit with error
+                if [ $node_works -eq 0 ]; then
+                    error_exit "Node.js $NODE_VERSION is installed but cannot run due to GLIBCXX library issue. Automatic fix attempts failed. Please update system libraries manually: sudo apt-get update && sudo apt-get upgrade && sudo apt-get install libstdc++6"
                 fi
             else
                 log_warning "Node.js is installed but verification failed: $node_error"
+                # Don't exit here, let verify_installation handle it
             fi
         fi
     else
