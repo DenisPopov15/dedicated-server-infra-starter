@@ -76,7 +76,11 @@ fi
 
 # Install Caddy
 log "Updating package lists..."
-apt update
+# Allow apt update to continue even if some repositories fail (e.g., old Raspbian versions)
+apt update || {
+    log_warning "Some repositories failed to update (this is common with older Raspbian versions)"
+    log_warning "Continuing with installation - we only need the Caddy repository to work"
+}
 
 log "Installing prerequisites..."
 apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
@@ -86,7 +90,10 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmo
 curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list > /dev/null
 
 log "Updating package lists with Caddy repository..."
-apt update
+# Allow apt update to continue even if some repositories fail
+apt update || {
+    log_warning "Some repositories failed to update, but Caddy repository should be available"
+}
 
 log "Installing Caddy..."
 apt install -y caddy
