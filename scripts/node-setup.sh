@@ -101,11 +101,35 @@ get_libstdcxx_version() {
         return 1
     fi
     
-    # Extract GLIBCXX versions - process line by line to be more defensive
+    # Extract GLIBCXX versions - use grep first to filter, then process
+    # Use timeout to prevent hanging on large files, limit output
+    local glibcxx_lines
+    local strings_output
+    
+    # Try with timeout first, fallback to regular strings
+    if command -v timeout &> /dev/null; then
+        strings_output=$(timeout 5 strings "$libstdcxx_path" 2>/dev/null)
+    else
+        # Without timeout, use a background process with kill after delay
+        strings_output=$(strings "$libstdcxx_path" 2>/dev/null) &
+        local strings_pid=$!
+        (sleep 5 && kill $strings_pid 2>/dev/null) &
+        wait $strings_pid 2>/dev/null || true
+    fi
+    
+    # Filter for GLIBCXX lines and limit to first 50 matches
+    glibcxx_lines=$(echo "$strings_output" | grep "^GLIBCXX_" | head -n 50)
+    
+    if [ -z "$glibcxx_lines" ]; then
+        echo ""
+        return 1
+    fi
+    
     local max_version=""
     local max_major=0 max_minor=0 max_patch=0
     
-    while IFS= read -r line; do
+    # Process each line
+    echo "$glibcxx_lines" | while IFS= read -r line; do
         # Only process lines that match GLIBCXX_X.Y or GLIBCXX_X.Y.Z pattern exactly
         if echo "$line" | grep -qE "^GLIBCXX_[0-9]+\.[0-9]+(\.[0-9]+)?$"; then
             # Extract version part (remove GLIBCXX_ prefix)
@@ -123,19 +147,27 @@ get_libstdcxx_version() {
                 
                 # Validate components are numeric
                 if [[ "$major" =~ ^[0-9]+$ ]] && [[ "$minor" =~ ^[0-9]+$ ]] && [[ "$patch" =~ ^[0-9]+$ ]]; then
-                    # Compare and keep maximum
-                    if [ "$major" -gt "$max_major" ] || \
-                       ([ "$major" -eq "$max_major" ] && [ "$minor" -gt "$max_minor" ]) || \
-                       ([ "$major" -eq "$max_major" ] && [ "$minor" -eq "$max_minor" ] && [ "$patch" -gt "$max_patch" ]); then
-                        max_major=$major
-                        max_minor=$minor
-                        max_patch=$patch
-                        max_version="$version_part"
+                    # Compare and keep maximum (use a temp file since we're in a subshell)
+                    local temp_file="/tmp/nvm_version_check_$$"
+                    if [ ! -f "$temp_file" ] || [ "$major" -gt "$(cat "$temp_file" | cut -d. -f1)" ] || \
+                       ([ "$major" -eq "$(cat "$temp_file" | cut -d. -f1 2>/dev/null || echo 0)" ] && \
+                        [ "$minor" -gt "$(cat "$temp_file" | cut -d. -f2 2>/dev/null || echo 0)" ]) || \
+                       ([ "$major" -eq "$(cat "$temp_file" | cut -d. -f1 2>/dev/null || echo 0)" ] && \
+                        [ "$minor" -eq "$(cat "$temp_file" | cut -d. -f2 2>/dev/null || echo 0)" ] && \
+                        [ "$patch" -gt "$(cat "$temp_file" | cut -d. -f3 2>/dev/null || echo 0)" ]); then
+                        echo "$version_part" > "$temp_file"
                     fi
                 fi
             fi
         fi
-    done < <(strings "$libstdcxx_path" 2>/dev/null)
+    done
+    
+    # Read the result from temp file if it exists
+    local temp_file="/tmp/nvm_version_check_$$"
+    if [ -f "$temp_file" ]; then
+        max_version=$(cat "$temp_file")
+        rm -f "$temp_file"
+    fi
     
     if [ -n "$max_version" ]; then
         echo "$max_version"
