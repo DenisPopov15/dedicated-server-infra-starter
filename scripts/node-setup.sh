@@ -196,27 +196,44 @@ version_meets_requirement() {
     local required_patch="$4"
     
     # Return false if version is empty or invalid
-    if [ -z "$current_version" ] || ! echo "$current_version" | grep -qE "^[0-9]+\.[0-9]+(\.[0-9]+)?$"; then
+    if [ -z "$current_version" ]; then
+        return 1
+    fi
+    
+    # Trim whitespace
+    current_version=$(echo "$current_version" | tr -d '[:space:]')
+    
+    # Validate format
+    if ! echo "$current_version" | grep -qE "^[0-9]+\.[0-9]+(\.[0-9]+)?$"; then
         return 1
     fi
     
     local current_major current_minor current_patch
-    current_major=$(echo "$current_version" | cut -d. -f1)
-    current_minor=$(echo "$current_version" | cut -d. -f2)
-    current_patch=$(echo "$current_version" | cut -d. -f3)
+    current_major=$(echo "$current_version" | cut -d. -f1 | tr -d '[:space:]')
+    current_minor=$(echo "$current_version" | cut -d. -f2 | tr -d '[:space:]')
+    current_patch=$(echo "$current_version" | cut -d. -f3 | tr -d '[:space:]')
     current_patch="${current_patch:-0}"
     
-    # Validate all components are numeric before doing arithmetic
+    # Validate all components are numeric and not empty before doing arithmetic
+    if [ -z "$current_major" ] || [ -z "$current_minor" ] || [ -z "$current_patch" ]; then
+        return 1
+    fi
+    
     if ! [[ "$current_major" =~ ^[0-9]+$ ]] || ! [[ "$current_minor" =~ ^[0-9]+$ ]] || ! [[ "$current_patch" =~ ^[0-9]+$ ]]; then
         return 1
     fi
     
+    # Validate required values are also numeric
+    if ! [[ "$required_major" =~ ^[0-9]+$ ]] || ! [[ "$required_minor" =~ ^[0-9]+$ ]] || ! [[ "$required_patch" =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+    
     # Now safe to do integer comparisons
-    if [ "$current_major" -gt "$required_major" ]; then
+    if [ "$current_major" -gt "$required_major" ] 2>/dev/null; then
         return 0
-    elif [ "$current_major" -eq "$required_major" ] && [ "$current_minor" -gt "$required_minor" ]; then
+    elif [ "$current_major" -eq "$required_major" ] 2>/dev/null && [ "$current_minor" -gt "$required_minor" ] 2>/dev/null; then
         return 0
-    elif [ "$current_major" -eq "$required_major" ] && [ "$current_minor" -eq "$required_minor" ] && [ "$current_patch" -ge "$required_patch" ]; then
+    elif [ "$current_major" -eq "$required_major" ] 2>/dev/null && [ "$current_minor" -eq "$required_minor" ] 2>/dev/null && [ "$current_patch" -ge "$required_patch" ] 2>/dev/null; then
         return 0
     fi
     
@@ -273,12 +290,24 @@ find_compatible_node_version() {
     local required_minor="$2"
     local required_patch="$3"
     
+    # Validate required parameters are numeric
+    if ! [[ "$required_major" =~ ^[0-9]+$ ]] || ! [[ "$required_minor" =~ ^[0-9]+$ ]] || ! [[ "$required_patch" =~ ^[0-9]+$ ]]; then
+        echo ""
+        return 1
+    fi
+    
     # Get version once to avoid multiple calls
     local current_version
     current_version=$(get_libstdcxx_version)
     
     # If we can't determine version, can't make recommendations
     if [ -z "$current_version" ]; then
+        echo ""
+        return 1
+    fi
+    
+    # Validate current_version format before using it
+    if ! echo "$current_version" | grep -qE "^[0-9]+\.[0-9]+(\.[0-9]+)?$"; then
         echo ""
         return 1
     fi
