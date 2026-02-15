@@ -5,7 +5,14 @@
 # Designed for Raspberry Pi and other Linux systems
 # Usage: ./node-setup.sh
 
-set -euo pipefail  # Exit on error, undefined vars, pipe failures
+set -eo pipefail  # Exit on error, pipe failures (removed -u to handle NVM's unbound variables)
+
+# Set TERM if not set (fixes tput errors in non-interactive environments)
+export TERM="${TERM:-dumb}"
+
+# Set basic locale if not set (fixes locale warnings)
+export LC_ALL="${LC_ALL:-C.UTF-8}"
+export LANG="${LANG:-C.UTF-8}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -63,18 +70,107 @@ check_nvm_installed() {
 # Function to source nvm
 source_nvm() {
     # Try to source nvm from common locations
+    # Suppress errors from tput and unbound variables
     if [ -s "$HOME/.nvm/nvm.sh" ]; then
         export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" 2>/dev/null || true
+        [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion" 2>/dev/null || true
         return 0
     elif [ -n "${NVM_DIR:-}" ] && [ -s "$NVM_DIR/nvm.sh" ]; then
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh" 2>/dev/null || true
+        [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion" 2>/dev/null || true
         return 0
     fi
     
     return 1
+}
+
+# Function to check libstdc++ compatibility
+check_libstdcxx_compatibility() {
+    log "Checking system library compatibility..."
+    
+    # Find libstdc++ library
+    local libstdcxx_path=""
+    if [ -f "/usr/lib/arm-linux-gnueabihf/libstdc++.so.6" ]; then
+        libstdcxx_path="/usr/lib/arm-linux-gnueabihf/libstdc++.so.6"
+    elif [ -f "/lib/arm-linux-gnueabihf/libstdc++.so.6" ]; then
+        libstdcxx_path="/lib/arm-linux-gnueabihf/libstdc++.so.6"
+    elif command -v find &> /dev/null; then
+        libstdcxx_path=$(find /usr/lib /lib -name "libstdc++.so.6" 2>/dev/null | head -n 1)
+    fi
+    
+    if [ -z "$libstdcxx_path" ]; then
+        log_warning "Could not find libstdc++.so.6, skipping compatibility check"
+        return 0
+    fi
+    
+    # Check available GLIBCXX versions
+    local available_versions
+    available_versions=$(strings "$libstdcxx_path" 2>/dev/null | grep "^GLIBCXX" | sort -V | tail -n 1 || echo "")
+    
+    if [ -z "$available_versions" ]; then
+        log_warning "Could not determine libstdc++ version, proceeding anyway"
+        return 0
+    fi
+    
+    # Extract version number (e.g., GLIBCXX_3.4.26 -> 3.4.26)
+    local max_version
+    max_version=$(echo "$available_versions" | sed 's/GLIBCXX_//')
+    
+    log "Maximum available GLIBCXX version: $max_version"
+    
+    # Node.js v20.0.0 requires GLIBCXX_3.4.26
+    # Compare versions (simple check - if max is less than 3.4.26, warn)
+    local required_major=3
+    local required_minor=4
+    local required_patch=26
+    
+    local max_major max_minor max_patch
+    max_major=$(echo "$max_version" | cut -d. -f1)
+    max_minor=$(echo "$max_version" | cut -d. -f2)
+    max_patch=$(echo "$max_version" | cut -d. -f3)
+    
+    # Ensure we have valid numeric values
+    if ! [[ "$max_major" =~ ^[0-9]+$ ]] || ! [[ "$max_minor" =~ ^[0-9]+$ ]]; then
+        log_warning "Could not parse libstdc++ version properly, skipping compatibility check"
+        return 0
+    fi
+    
+    # Default patch to 0 if not present
+    max_patch="${max_patch:-0}"
+    if ! [[ "$max_patch" =~ ^[0-9]+$ ]]; then
+        max_patch=0
+    fi
+    
+    # Simple version comparison
+    if [ "$max_major" -lt "$required_major" ] || \
+       ([ "$max_major" -eq "$required_major" ] && [ "$max_minor" -lt "$required_minor" ]) || \
+       ([ "$max_major" -eq "$required_major" ] && [ "$max_minor" -eq "$required_minor" ] && [ "$max_patch" -lt "$required_patch" ]); then
+        log_error "System libstdc++ version ($max_version) may be too old for Node.js $NODE_VERSION"
+        log_error "Node.js $NODE_VERSION requires GLIBCXX_3.4.26 or higher"
+        log ""
+        log "Possible solutions:"
+        log "1. Update your system: sudo apt-get update && sudo apt-get upgrade"
+        log "2. Install newer libstdc++: sudo apt-get install libstdc++6"
+        log "3. Use a different Node.js version (e.g., v18.x or v16.x)"
+        log "4. Build Node.js from source (slower but more compatible)"
+        log ""
+        
+        # Only prompt in interactive mode
+        if [ -t 0 ]; then
+            read -p "Continue anyway? (y/N) " -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                error_exit "Installation cancelled by user"
+            fi
+            log_warning "Proceeding with installation despite compatibility warning..."
+        else
+            log_warning "Non-interactive mode: proceeding with installation despite compatibility warning..."
+            log_warning "If installation fails, please update libstdc++ manually"
+        fi
+    else
+        log_success "System libraries appear compatible"
+    fi
 }
 
 # Function to install nvm
@@ -97,9 +193,11 @@ install_nvm() {
     # Download and install nvm using the official install script
     log "Downloading NVM installation script..."
     if command -v curl &> /dev/null; then
-        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh 2>&1 | \
+            bash 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
     elif command -v wget &> /dev/null; then
-        wget -qO- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+        wget -qO- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh 2>&1 | \
+            bash 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
     else
         error_exit "Neither curl nor wget is available for downloading NVM"
     fi
@@ -139,23 +237,55 @@ install_node() {
         error_exit "Failed to source NVM. Cannot install Node.js"
     fi
     
+    # Check library compatibility before installation
+    check_libstdcxx_compatibility
+    
     # Install the specific Node.js version
-    if nvm install "$NODE_VERSION"; then
+    # Redirect stderr to filter out tput and manpath warnings
+    local install_output
+    install_output=$(nvm install "$NODE_VERSION" 2>&1) || {
+        # Filter out non-critical errors
+        if echo "$install_output" | grep -q "GLIBCXX"; then
+            error_exit "Node.js installation failed due to incompatible system libraries. Please update libstdc++ or use a different Node.js version."
+        fi
+        error_exit "Failed to install Node.js $NODE_VERSION"
+    }
+    
+    # Filter and display output (suppress tput and manpath warnings)
+    echo "$install_output" | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
+    
+    # Verify installation succeeded
+    if ! source_nvm; then
+        error_exit "Failed to source NVM after installation"
+    fi
+    
+    # Check if node command is available
+    if nvm use "$NODE_VERSION" &>/dev/null && command -v node &>/dev/null; then
         log_success "Node.js $NODE_VERSION installed successfully"
     else
-        error_exit "Failed to install Node.js $NODE_VERSION"
+        # Check if it's a library compatibility issue
+        if node --version &>/dev/null; then
+            log_success "Node.js $NODE_VERSION installed successfully"
+        else
+            local node_error
+            node_error=$(node --version 2>&1 || true)
+            if echo "$node_error" | grep -q "GLIBCXX"; then
+                error_exit "Node.js installed but cannot run due to incompatible system libraries. Please update libstdc++: sudo apt-get update && sudo apt-get install libstdc++6"
+            fi
+            error_exit "Node.js installation may have failed. Error: $node_error"
+        fi
     fi
     
     # Set as default version
     log "Setting Node.js $NODE_VERSION as default..."
-    if nvm alias default "$NODE_VERSION"; then
+    if nvm alias default "$NODE_VERSION" 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" >/dev/null; then
         log_success "Node.js $NODE_VERSION set as default"
     else
         log_warning "Failed to set Node.js $NODE_VERSION as default, but installation succeeded"
     fi
     
     # Use the version in current session
-    nvm use "$NODE_VERSION" || log_warning "Failed to switch to Node.js $NODE_VERSION in current session"
+    nvm use "$NODE_VERSION" 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" >/dev/null || log_warning "Failed to switch to Node.js $NODE_VERSION in current session"
 }
 
 # Function to verify installation
@@ -168,7 +298,14 @@ verify_installation() {
     
     # Check Node.js version
     if command -v node &> /dev/null; then
-        NODE_VER=$(node --version)
+        local node_error
+        NODE_VER=$(node --version 2>&1) || {
+            node_error=$(node --version 2>&1)
+            if echo "$node_error" | grep -q "GLIBCXX"; then
+                error_exit "Node.js is installed but cannot run due to incompatible system libraries (GLIBCXX). Please run: sudo apt-get update && sudo apt-get install libstdc++6"
+            fi
+            error_exit "Failed to get Node.js version: $node_error"
+        }
         log_success "Node.js version: $NODE_VER"
         
         # Verify it's the correct version
@@ -184,7 +321,7 @@ verify_installation() {
     
     # Check npm version
     if command -v npm &> /dev/null; then
-        NPM_VER=$(npm --version)
+        NPM_VER=$(npm --version 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || echo "unknown")
         log_success "npm version: $NPM_VER"
     else
         error_exit "npm command not found after installation"
@@ -192,7 +329,7 @@ verify_installation() {
     
     # Check nvm version
     if command -v nvm &> /dev/null; then
-        NVM_VER=$(nvm --version)
+        NVM_VER=$(nvm --version 2>&1 | grep -v "tput: unknown terminal" || echo "unknown")
         log_success "NVM version: $NVM_VER"
     fi
 }
