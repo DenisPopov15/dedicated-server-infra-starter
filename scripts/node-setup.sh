@@ -102,81 +102,35 @@ get_libstdcxx_version() {
         return 1
     fi
     
-    # Extract GLIBCXX versions - use grep first to filter, then process
-    # Use timeout to prevent hanging on large files, limit output
-    local glibcxx_lines
-    local strings_output
+    # Extract GLIBCXX versions - use a simpler approach with sort
+    # Use timeout to prevent hanging on large files
+    local glibcxx_versions
+    local strings_cmd="strings \"$libstdcxx_path\" 2>/dev/null"
     
-    # Try with timeout first, fallback to regular strings
     if command -v timeout &> /dev/null; then
-        strings_output=$(timeout 5 strings "$libstdcxx_path" 2>/dev/null)
+        glibcxx_versions=$(eval "timeout 5 $strings_cmd" | grep -E "^GLIBCXX_[0-9]+\.[0-9]+(\.[0-9]+)?$" | sed 's/^GLIBCXX_//' | head -n 50)
     else
-        # Without timeout, use a background process with kill after delay
-        strings_output=$(strings "$libstdcxx_path" 2>/dev/null) &
-        local strings_pid=$!
-        (sleep 5 && kill $strings_pid 2>/dev/null) &
-        wait $strings_pid 2>/dev/null || true
+        # Without timeout, just run it (might be slow but won't hang forever)
+        glibcxx_versions=$(eval "$strings_cmd" | grep -E "^GLIBCXX_[0-9]+\.[0-9]+(\.[0-9]+)?$" | sed 's/^GLIBCXX_//' | head -n 50)
     fi
     
-    # Filter for GLIBCXX lines and limit to first 50 matches
-    glibcxx_lines=$(echo "$strings_output" | grep "^GLIBCXX_" | head -n 50)
-    
-    if [ -z "$glibcxx_lines" ]; then
+    if [ -z "$glibcxx_versions" ]; then
         echo ""
         return 1
     fi
     
-    local max_version=""
-    local max_major=0 max_minor=0 max_patch=0
+    # Use sort -V to get the highest version (version sort)
+    local max_version
+    max_version=$(echo "$glibcxx_versions" | sort -V -t. -k1,1n -k2,2n -k3,3n 2>/dev/null | tail -n 1)
     
-    # Process each line
-    echo "$glibcxx_lines" | while IFS= read -r line; do
-        # Only process lines that match GLIBCXX_X.Y or GLIBCXX_X.Y.Z pattern exactly
-        if echo "$line" | grep -qE "^GLIBCXX_[0-9]+\.[0-9]+(\.[0-9]+)?$"; then
-            # Extract version part (remove GLIBCXX_ prefix)
-            local version_part
-            version_part=$(echo "$line" | sed 's/^GLIBCXX_//')
-            
-            # Validate it's a proper version
-            if echo "$version_part" | grep -qE "^[0-9]+\.[0-9]+(\.[0-9]+)?$"; then
-                # Parse version components
-                local major minor patch
-                major=$(echo "$version_part" | cut -d. -f1)
-                minor=$(echo "$version_part" | cut -d. -f2)
-                patch=$(echo "$version_part" | cut -d. -f3)
-                patch="${patch:-0}"
-                
-                # Validate components are numeric
-                if [[ "$major" =~ ^[0-9]+$ ]] && [[ "$minor" =~ ^[0-9]+$ ]] && [[ "$patch" =~ ^[0-9]+$ ]]; then
-                    # Compare and keep maximum (use a temp file since we're in a subshell)
-                    local temp_file="/tmp/nvm_version_check_$$"
-                    if [ ! -f "$temp_file" ] || [ "$major" -gt "$(cat "$temp_file" | cut -d. -f1)" ] || \
-                       ([ "$major" -eq "$(cat "$temp_file" | cut -d. -f1 2>/dev/null || echo 0)" ] && \
-                        [ "$minor" -gt "$(cat "$temp_file" | cut -d. -f2 2>/dev/null || echo 0)" ]) || \
-                       ([ "$major" -eq "$(cat "$temp_file" | cut -d. -f1 2>/dev/null || echo 0)" ] && \
-                        [ "$minor" -eq "$(cat "$temp_file" | cut -d. -f2 2>/dev/null || echo 0)" ] && \
-                        [ "$patch" -gt "$(cat "$temp_file" | cut -d. -f3 2>/dev/null || echo 0)" ]); then
-                        echo "$version_part" > "$temp_file"
-                    fi
-                fi
-            fi
-        fi
-    done
-    
-    # Read the result from temp file if it exists
-    local temp_file="/tmp/nvm_version_check_$$"
-    if [ -f "$temp_file" ]; then
-        max_version=$(cat "$temp_file")
-        rm -f "$temp_file"
+    # Validate the result
+    if [ -z "$max_version" ] || ! echo "$max_version" | grep -qE "^[0-9]+\.[0-9]+(\.[0-9]+)?$"; then
+        echo ""
+        return 1
     fi
     
-    if [ -n "$max_version" ]; then
-        echo "$max_version"
-        return 0
-    fi
-    
-    echo ""
-    return 1
+    echo "$max_version"
+    return 0
 }
 
 # Function to check if version meets requirement
@@ -186,16 +140,23 @@ version_meets_requirement() {
     local required_minor="$3"
     local required_patch="$4"
     
+    # Return false if version is empty or invalid
+    if [ -z "$current_version" ] || ! echo "$current_version" | grep -qE "^[0-9]+\.[0-9]+(\.[0-9]+)?$"; then
+        return 1
+    fi
+    
     local current_major current_minor current_patch
     current_major=$(echo "$current_version" | cut -d. -f1)
     current_minor=$(echo "$current_version" | cut -d. -f2)
     current_patch=$(echo "$current_version" | cut -d. -f3)
     current_patch="${current_patch:-0}"
     
+    # Validate all components are numeric before doing arithmetic
     if ! [[ "$current_major" =~ ^[0-9]+$ ]] || ! [[ "$current_minor" =~ ^[0-9]+$ ]] || ! [[ "$current_patch" =~ ^[0-9]+$ ]]; then
         return 1
     fi
     
+    # Now safe to do integer comparisons
     if [ "$current_major" -gt "$required_major" ]; then
         return 0
     elif [ "$current_major" -eq "$required_major" ] && [ "$current_minor" -gt "$required_minor" ]; then
@@ -257,32 +218,42 @@ find_compatible_node_version() {
     local required_minor="$2"
     local required_patch="$3"
     
+    # Get version once to avoid multiple calls
+    local current_version
+    current_version=$(get_libstdcxx_version)
+    
+    # If we can't determine version, can't make recommendations
+    if [ -z "$current_version" ]; then
+        echo ""
+        return 1
+    fi
+    
     # Node.js versions and their GLIBCXX requirements (approximate)
     # v18.x typically requires GLIBCXX_3.4.21+
     # v16.x typically requires GLIBCXX_3.4.19+
     # v14.x typically requires GLIBCXX_3.4.18+
     
-    if version_meets_requirement "$(get_libstdcxx_version)" "$required_major" "$required_minor" "$required_patch"; then
+    if version_meets_requirement "$current_version" "$required_major" "$required_minor" "$required_patch"; then
         echo "$NODE_VERSION"
         return 0
     fi
     
     # Try v18 LTS (usually more compatible)
-    if version_meets_requirement "$(get_libstdcxx_version)" 3 4 21; then
+    if version_meets_requirement "$current_version" 3 4 21; then
         log "Suggesting Node.js v18.x LTS for better compatibility"
         echo "v18.20.4"  # Latest v18 LTS
         return 0
     fi
     
     # Try v16 LTS
-    if version_meets_requirement "$(get_libstdcxx_version)" 3 4 19; then
+    if version_meets_requirement "$current_version" 3 4 19; then
         log "Suggesting Node.js v16.x LTS for better compatibility"
         echo "v16.20.2"  # Latest v16 LTS
         return 0
     fi
     
     # Try v14 LTS
-    if version_meets_requirement "$(get_libstdcxx_version)" 3 4 18; then
+    if version_meets_requirement "$current_version" 3 4 18; then
         log "Suggesting Node.js v14.x LTS for better compatibility"
         echo "v14.21.3"  # Latest v14 LTS
         return 0
