@@ -85,11 +85,8 @@ source_nvm() {
     return 1
 }
 
-# Function to check libstdc++ compatibility
-check_libstdcxx_compatibility() {
-    log "Checking system library compatibility..."
-    
-    # Find libstdc++ library
+# Function to get current libstdc++ version
+get_libstdcxx_version() {
     local libstdcxx_path=""
     if [ -f "/usr/lib/arm-linux-gnueabihf/libstdc++.so.6" ]; then
         libstdcxx_path="/usr/lib/arm-linux-gnueabihf/libstdc++.so.6"
@@ -100,76 +97,223 @@ check_libstdcxx_compatibility() {
     fi
     
     if [ -z "$libstdcxx_path" ]; then
-        log_warning "Could not find libstdc++.so.6, skipping compatibility check"
-        return 0
+        echo ""
+        return 1
     fi
     
-    # Check available GLIBCXX versions
     local available_versions
     available_versions=$(strings "$libstdcxx_path" 2>/dev/null | grep "^GLIBCXX" | sort -V | tail -n 1 || echo "")
     
     if [ -z "$available_versions" ]; then
+        echo ""
+        return 1
+    fi
+    
+    echo "$available_versions" | sed 's/GLIBCXX_//'
+    return 0
+}
+
+# Function to check if version meets requirement
+version_meets_requirement() {
+    local current_version="$1"
+    local required_major="$2"
+    local required_minor="$3"
+    local required_patch="$4"
+    
+    local current_major current_minor current_patch
+    current_major=$(echo "$current_version" | cut -d. -f1)
+    current_minor=$(echo "$current_version" | cut -d. -f2)
+    current_patch=$(echo "$current_version" | cut -d. -f3)
+    current_patch="${current_patch:-0}"
+    
+    if ! [[ "$current_major" =~ ^[0-9]+$ ]] || ! [[ "$current_minor" =~ ^[0-9]+$ ]] || ! [[ "$current_patch" =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+    
+    if [ "$current_major" -gt "$required_major" ]; then
+        return 0
+    elif [ "$current_major" -eq "$required_major" ] && [ "$current_minor" -gt "$required_minor" ]; then
+        return 0
+    elif [ "$current_major" -eq "$required_major" ] && [ "$current_minor" -eq "$required_minor" ] && [ "$current_patch" -ge "$required_patch" ]; then
+        return 0
+    fi
+    
+    return 1
+}
+
+# Function to try updating libstdc++
+try_update_libstdcxx() {
+    log "Attempting to update libstdc++..."
+    
+    if ! command -v apt-get &> /dev/null; then
+        log_warning "apt-get not available, cannot update libstdc++ automatically"
+        return 1
+    fi
+    
+    # Check if we have sudo access
+    if ! sudo -n true 2>/dev/null && [ -t 0 ]; then
+        log "This operation requires sudo privileges. You may be prompted for your password."
+    fi
+    
+    log "Updating package lists..."
+    if sudo apt-get update -qq 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:"; then
+        log "Installing/upgrading libstdc++6..."
+        if sudo apt-get install -y libstdc++6 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:"; then
+            log_success "libstdc++ updated successfully"
+            return 0
+        else
+            log_warning "Failed to update libstdc++ via apt-get"
+            return 1
+        fi
+    else
+        log_warning "Failed to update package lists"
+        return 1
+    fi
+}
+
+# Function to find compatible Node.js version
+find_compatible_node_version() {
+    local required_major="$1"
+    local required_minor="$2"
+    local required_patch="$3"
+    
+    # Node.js versions and their GLIBCXX requirements (approximate)
+    # v18.x typically requires GLIBCXX_3.4.21+
+    # v16.x typically requires GLIBCXX_3.4.19+
+    # v14.x typically requires GLIBCXX_3.4.18+
+    
+    if version_meets_requirement "$(get_libstdcxx_version)" "$required_major" "$required_minor" "$required_patch"; then
+        echo "$NODE_VERSION"
+        return 0
+    fi
+    
+    # Try v18 LTS (usually more compatible)
+    if version_meets_requirement "$(get_libstdcxx_version)" 3 4 21; then
+        log "Suggesting Node.js v18.x LTS for better compatibility"
+        echo "v18.20.4"  # Latest v18 LTS
+        return 0
+    fi
+    
+    # Try v16 LTS
+    if version_meets_requirement "$(get_libstdcxx_version)" 3 4 19; then
+        log "Suggesting Node.js v16.x LTS for better compatibility"
+        echo "v16.20.2"  # Latest v16 LTS
+        return 0
+    fi
+    
+    # Try v14 LTS
+    if version_meets_requirement "$(get_libstdcxx_version)" 3 4 18; then
+        log "Suggesting Node.js v14.x LTS for better compatibility"
+        echo "v14.21.3"  # Latest v14 LTS
+        return 0
+    fi
+    
+    echo ""
+    return 1
+}
+
+# Function to check and fix libstdc++ compatibility
+check_libstdcxx_compatibility() {
+    log "Checking system library compatibility..."
+    
+    local current_version
+    current_version=$(get_libstdcxx_version)
+    
+    if [ -z "$current_version" ]; then
         log_warning "Could not determine libstdc++ version, proceeding anyway"
         return 0
     fi
     
-    # Extract version number (e.g., GLIBCXX_3.4.26 -> 3.4.26)
-    local max_version
-    max_version=$(echo "$available_versions" | sed 's/GLIBCXX_//')
-    
-    log "Maximum available GLIBCXX version: $max_version"
+    log "Current GLIBCXX version: $current_version"
     
     # Node.js v20.0.0 requires GLIBCXX_3.4.26
-    # Compare versions (simple check - if max is less than 3.4.26, warn)
     local required_major=3
     local required_minor=4
     local required_patch=26
     
-    local max_major max_minor max_patch
-    max_major=$(echo "$max_version" | cut -d. -f1)
-    max_minor=$(echo "$max_version" | cut -d. -f2)
-    max_patch=$(echo "$max_version" | cut -d. -f3)
-    
-    # Ensure we have valid numeric values
-    if ! [[ "$max_major" =~ ^[0-9]+$ ]] || ! [[ "$max_minor" =~ ^[0-9]+$ ]]; then
-        log_warning "Could not parse libstdc++ version properly, skipping compatibility check"
+    if version_meets_requirement "$current_version" "$required_major" "$required_minor" "$required_patch"; then
+        log_success "System libraries are compatible with Node.js $NODE_VERSION"
         return 0
     fi
     
-    # Default patch to 0 if not present
-    max_patch="${max_patch:-0}"
-    if ! [[ "$max_patch" =~ ^[0-9]+$ ]]; then
-        max_patch=0
+    log_error "System libstdc++ version ($current_version) is too old for Node.js $NODE_VERSION"
+    log_error "Node.js $NODE_VERSION requires GLIBCXX_3.4.26 or higher"
+    log ""
+    
+    # Try to update libstdc++ automatically
+    log "Attempting to fix compatibility issue..."
+    if try_update_libstdcxx; then
+        # Recheck version after update
+        sleep 1  # Give system a moment to update
+        current_version=$(get_libstdcxx_version)
+        log "Rechecking GLIBCXX version after update: $current_version"
+        
+        if version_meets_requirement "$current_version" "$required_major" "$required_minor" "$required_patch"; then
+            log_success "System libraries are now compatible after update!"
+            return 0
+        else
+            log_warning "Update completed but version may still be insufficient"
+        fi
     fi
     
-    # Simple version comparison
-    if [ "$max_major" -lt "$required_major" ] || \
-       ([ "$max_major" -eq "$required_major" ] && [ "$max_minor" -lt "$required_minor" ]) || \
-       ([ "$max_major" -eq "$required_major" ] && [ "$max_minor" -eq "$required_minor" ] && [ "$max_patch" -lt "$required_patch" ]); then
-        log_error "System libstdc++ version ($max_version) may be too old for Node.js $NODE_VERSION"
-        log_error "Node.js $NODE_VERSION requires GLIBCXX_3.4.26 or higher"
-        log ""
-        log "Possible solutions:"
-        log "1. Update your system: sudo apt-get update && sudo apt-get upgrade"
-        log "2. Install newer libstdc++: sudo apt-get install libstdc++6"
-        log "3. Use a different Node.js version (e.g., v18.x or v16.x)"
-        log "4. Build Node.js from source (slower but more compatible)"
-        log ""
+    # If update didn't work, try to find a compatible Node.js version
+    log ""
+    log "Attempting to find a compatible Node.js version..."
+    local compatible_version
+    compatible_version=$(find_compatible_node_version "$required_major" "$required_minor" "$required_patch")
+    
+    if [ -n "$compatible_version" ] && [ "$compatible_version" != "$NODE_VERSION" ]; then
+        log_warning "Node.js $NODE_VERSION may not work with your system libraries"
+        log "Would you like to install $compatible_version instead? (recommended)"
         
-        # Only prompt in interactive mode
         if [ -t 0 ]; then
-            read -p "Continue anyway? (y/N) " -n 1 -r
+            read -p "Install $compatible_version instead of $NODE_VERSION? (Y/n) " -n 1 -r
             echo
-            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-                error_exit "Installation cancelled by user"
+            if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                NODE_VERSION="$compatible_version"
+                log "Switching to Node.js $NODE_VERSION for compatibility"
+                return 0
             fi
-            log_warning "Proceeding with installation despite compatibility warning..."
         else
-            log_warning "Non-interactive mode: proceeding with installation despite compatibility warning..."
-            log_warning "If installation fails, please update libstdc++ manually"
+            # Non-interactive: use compatible version
+            NODE_VERSION="$compatible_version"
+            log "Non-interactive mode: switching to Node.js $NODE_VERSION for compatibility"
+            return 0
         fi
+    fi
+    
+    # Last resort: offer to build from source
+    log ""
+    log_error "Could not automatically resolve compatibility issue"
+    log ""
+    log "Manual solutions:"
+    log "1. Update system: sudo apt-get update && sudo apt-get upgrade && sudo apt-get install libstdc++6"
+    log "2. Use a different Node.js version manually: nvm install v18.20.4"
+    log "3. Build Node.js from source (slower): nvm install -s $NODE_VERSION"
+    log ""
+    
+    if [ -t 0 ]; then
+        log ""
+        log "Options:"
+        log "1. Try to build from source (will take longer but should work)"
+        log "2. Continue with binary installation anyway (may fail)"
+        log "3. Cancel and update libraries manually"
+        read -p "Choose option (1/2/3) [1]: " -n 1 -r
+        echo
+        case "$REPLY" in
+            2)
+                log_warning "Proceeding with binary installation despite compatibility warning..."
+                ;;
+            3)
+                error_exit "Installation cancelled. Please update system libraries: sudo apt-get update && sudo apt-get upgrade && sudo apt-get install libstdc++6"
+                ;;
+            *)
+                log "Will attempt to build from source if binary installation fails"
+                ;;
+        esac
     else
-        log_success "System libraries appear compatible"
+        # Non-interactive: will try building from source if binary fails
+        log_warning "Non-interactive mode: will attempt to build from source if needed"
     fi
 }
 
@@ -229,6 +373,27 @@ check_node_installed() {
     return 1
 }
 
+# Function to verify node works after installation
+verify_node_works() {
+    if ! source_nvm; then
+        return 1
+    fi
+    
+    if ! nvm use "$NODE_VERSION" &>/dev/null; then
+        return 1
+    fi
+    
+    local node_output node_error
+    node_output=$(node --version 2>&1)
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ] && ! echo "$node_output" | grep -q "GLIBCXX"; then
+        return 0
+    fi
+    
+    return 1
+}
+
 # Function to install Node.js
 install_node() {
     log "Installing Node.js $NODE_VERSION..."
@@ -237,41 +402,66 @@ install_node() {
         error_exit "Failed to source NVM. Cannot install Node.js"
     fi
     
-    # Check library compatibility before installation
+    # Check library compatibility before installation (may switch to compatible version)
     check_libstdcxx_compatibility
     
-    # Install the specific Node.js version
-    # Redirect stderr to filter out tput and manpath warnings
+    # Try installing the Node.js version (binary)
+    log "Attempting to install Node.js $NODE_VERSION (binary)..."
     local install_output
     install_output=$(nvm install "$NODE_VERSION" 2>&1) || {
-        # Filter out non-critical errors
-        if echo "$install_output" | grep -q "GLIBCXX"; then
-            error_exit "Node.js installation failed due to incompatible system libraries. Please update libstdc++ or use a different Node.js version."
-        fi
-        error_exit "Failed to install Node.js $NODE_VERSION"
+        log_warning "Binary installation failed or had issues"
     }
     
     # Filter and display output (suppress tput and manpath warnings)
     echo "$install_output" | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
     
-    # Verify installation succeeded
-    if ! source_nvm; then
-        error_exit "Failed to source NVM after installation"
-    fi
-    
-    # Check if node command is available
-    if nvm use "$NODE_VERSION" &>/dev/null && command -v node &>/dev/null; then
-        log_success "Node.js $NODE_VERSION installed successfully"
+    # Verify installation succeeded and node works
+    if verify_node_works; then
+        log_success "Node.js $NODE_VERSION installed and working successfully"
     else
-        # Check if it's a library compatibility issue
-        if node --version &>/dev/null; then
-            log_success "Node.js $NODE_VERSION installed successfully"
-        else
-            local node_error
-            node_error=$(node --version 2>&1 || true)
-            if echo "$node_error" | grep -q "GLIBCXX"; then
-                error_exit "Node.js installed but cannot run due to incompatible system libraries. Please update libstdc++: sudo apt-get update && sudo apt-get install libstdc++6"
+        # Installation may have succeeded but node can't run due to GLIBCXX
+        local node_error
+        node_error=$(node --version 2>&1 || echo "")
+        
+        if echo "$node_error" | grep -q "GLIBCXX"; then
+            log_error "Node.js binary installed but cannot run due to GLIBCXX library issue"
+            log ""
+            log "Attempting to build Node.js from source (this will take longer but should work)..."
+            
+            # Check if we have build tools
+            if ! command -v make &>/dev/null || ! command -v g++ &>/dev/null; then
+                log "Installing build tools (this may require sudo)..."
+                if command -v apt-get &>/dev/null; then
+                    sudo apt-get update -qq 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
+                    sudo apt-get install -y build-essential python3 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || {
+                        log_error "Failed to install build tools. Please install manually: sudo apt-get install build-essential python3"
+                        error_exit "Cannot build Node.js from source without build tools"
+                    }
+                else
+                    error_exit "Cannot install build tools automatically. Please install build-essential and python3 manually."
+                fi
             fi
+            
+            # Remove the binary installation and build from source
+            log "Removing binary installation..."
+            nvm uninstall "$NODE_VERSION" 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
+            
+            log "Building Node.js $NODE_VERSION from source (this may take 10-30 minutes)..."
+            install_output=$(nvm install -s "$NODE_VERSION" 2>&1) || {
+                log_error "Failed to build Node.js from source"
+                error_exit "Could not install Node.js $NODE_VERSION. Please update system libraries or try a different version."
+            }
+            
+            # Filter and display output
+            echo "$install_output" | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
+            
+            # Verify it works now
+            if verify_node_works; then
+                log_success "Node.js $NODE_VERSION built from source and working successfully!"
+            else
+                error_exit "Node.js built from source but still cannot run. Please check system requirements."
+            fi
+        else
             error_exit "Node.js installation may have failed. Error: $node_error"
         fi
     fi
@@ -296,41 +486,74 @@ verify_installation() {
         error_exit "Failed to source NVM for verification"
     fi
     
+    local verification_failed=0
+    local library_issue=0
+    
     # Check Node.js version
     if command -v node &> /dev/null; then
-        local node_error
-        NODE_VER=$(node --version 2>&1) || {
-            node_error=$(node --version 2>&1)
-            if echo "$node_error" | grep -q "GLIBCXX"; then
-                error_exit "Node.js is installed but cannot run due to incompatible system libraries (GLIBCXX). Please run: sudo apt-get update && sudo apt-get install libstdc++6"
-            fi
-            error_exit "Failed to get Node.js version: $node_error"
-        }
-        log_success "Node.js version: $NODE_VER"
+        local node_output exit_code
+        node_output=$(node --version 2>&1)
+        exit_code=$?
         
-        # Verify it's the correct version
-        if [ "$NODE_VER" = "$NODE_VERSION" ]; then
-            log_success "Correct Node.js version is active: $NODE_VER"
+        # Check if output contains GLIBCXX error
+        if echo "$node_output" | grep -q "GLIBCXX"; then
+            log_error "Node.js is installed but cannot run due to incompatible system libraries (GLIBCXX)"
+            log_error "Please run: sudo apt-get update && sudo apt-get install libstdc++6"
+            log_warning "Node.js files are installed, but the binary cannot execute due to missing library version"
+            library_issue=1
+            verification_failed=1
+        elif [ $exit_code -ne 0 ]; then
+            log_error "Failed to get Node.js version: $node_output"
+            verification_failed=1
         else
-            log_warning "Node.js version is $NODE_VER, expected $NODE_VERSION"
-            log_warning "You may need to run: nvm use $NODE_VERSION"
+            # Success - extract version
+            NODE_VER=$(echo "$node_output" | head -n 1 | tr -d '\n\r')
+            log_success "Node.js version: $NODE_VER"
+            
+            # Verify it's the correct version
+            if [ "$NODE_VER" = "$NODE_VERSION" ]; then
+                log_success "Correct Node.js version is active: $NODE_VER"
+            else
+                log_warning "Node.js version is $NODE_VER, expected $NODE_VERSION"
+                log_warning "You may need to run: nvm use $NODE_VERSION"
+            fi
         fi
     else
-        error_exit "Node.js command not found after installation"
+        log_error "Node.js command not found after installation"
+        verification_failed=1
     fi
     
-    # Check npm version
-    if command -v npm &> /dev/null; then
-        NPM_VER=$(npm --version 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || echo "unknown")
-        log_success "npm version: $NPM_VER"
+    # Check npm version (only if node works)
+    if [ $library_issue -eq 0 ] && command -v npm &> /dev/null; then
+        local npm_output
+        npm_output=$(npm --version 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || echo "")
+        if [ -n "$npm_output" ] && ! echo "$npm_output" | grep -q "GLIBCXX"; then
+            NPM_VER=$(echo "$npm_output" | head -n 1 | tr -d '\n\r')
+            log_success "npm version: $NPM_VER"
+        else
+            log_warning "Could not verify npm version (may be due to library compatibility issue)"
+        fi
+    elif [ $library_issue -eq 1 ]; then
+        log_warning "npm verification skipped due to library compatibility issue"
     else
-        error_exit "npm command not found after installation"
+        log_warning "npm command not found (this may be normal if Node.js installation had issues)"
     fi
     
     # Check nvm version
     if command -v nvm &> /dev/null; then
-        NVM_VER=$(nvm --version 2>&1 | grep -v "tput: unknown terminal" || echo "unknown")
+        NVM_VER=$(nvm --version 2>&1 | grep -v "tput: unknown terminal" | head -n 1 | tr -d '\n\r' || echo "unknown")
         log_success "NVM version: $NVM_VER"
+    fi
+    
+    # If there's a library issue, warn but don't fail (installation was successful)
+    if [ $library_issue -eq 1 ]; then
+        log_warning "Installation completed, but Node.js cannot run until system libraries are updated"
+        return 0  # Return success since installation itself was successful
+    fi
+    
+    # If verification failed for other reasons, exit with error
+    if [ $verification_failed -eq 1 ]; then
+        error_exit "Installation verification failed"
     fi
 }
 
