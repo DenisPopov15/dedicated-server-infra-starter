@@ -22,7 +22,8 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Node.js version to install
-NODE_VERSION="v20.0.0"
+# NODE_VERSION="v20.0.0"
+NODE_VERSION="v18.0.0"
 
 # Function to log messages
 log() {
