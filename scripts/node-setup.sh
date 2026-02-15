@@ -96,20 +96,27 @@ get_libstdcxx_version() {
         libstdcxx_path=$(find /usr/lib /lib -name "libstdc++.so.6" 2>/dev/null | head -n 1)
     fi
     
-    if [ -z "$libstdcxx_path" ]; then
+    if [ -z "$libstdcxx_path" ] || [ ! -f "$libstdcxx_path" ]; then
         echo ""
         return 1
     fi
     
+    # Extract GLIBCXX versions, filter out non-version strings, and get the highest
     local available_versions
-    available_versions=$(strings "$libstdcxx_path" 2>/dev/null | grep "^GLIBCXX" | sort -V | tail -n 1 || echo "")
+    available_versions=$(strings "$libstdcxx_path" 2>/dev/null | grep "^GLIBCXX_[0-9]" | sed 's/GLIBCXX_//' | sort -V -t. -k1,1n -k2,2n -k3,3n | tail -n 1 || echo "")
     
     if [ -z "$available_versions" ]; then
         echo ""
         return 1
     fi
     
-    echo "$available_versions" | sed 's/GLIBCXX_//'
+    # Validate it looks like a version number (e.g., 3.4.26)
+    if ! echo "$available_versions" | grep -qE "^[0-9]+\.[0-9]+(\.[0-9]+)?$"; then
+        echo ""
+        return 1
+    fi
+    
+    echo "$available_versions"
     return 0
 }
 
@@ -156,17 +163,31 @@ try_update_libstdcxx() {
     fi
     
     log "Updating package lists..."
-    if sudo apt-get update -qq 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:"; then
-        log "Installing/upgrading libstdc++6..."
-        if sudo apt-get install -y libstdc++6 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:"; then
-            log_success "libstdc++ updated successfully"
-            return 0
-        else
-            log_warning "Failed to update libstdc++ via apt-get"
-            return 1
-        fi
+    local update_output update_exit
+    update_output=$(sudo apt-get update -qq 2>&1)
+    update_exit=$?
+    
+    # Filter out tput and manpath warnings but preserve exit code
+    echo "$update_output" | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
+    
+    if [ $update_exit -ne 0 ]; then
+        log_warning "Failed to update package lists (exit code: $update_exit)"
+        return 1
+    fi
+    
+    log "Installing/upgrading libstdc++6..."
+    local install_output install_exit
+    install_output=$(sudo apt-get install -y libstdc++6 2>&1)
+    install_exit=$?
+    
+    # Filter out tput and manpath warnings but preserve exit code
+    echo "$install_output" | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
+    
+    if [ $install_exit -eq 0 ]; then
+        log_success "libstdc++ updated successfully"
+        return 0
     else
-        log_warning "Failed to update package lists"
+        log_warning "Failed to update libstdc++ via apt-get (exit code: $install_exit)"
         return 1
     fi
 }
