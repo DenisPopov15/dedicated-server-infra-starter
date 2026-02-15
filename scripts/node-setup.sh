@@ -545,10 +545,32 @@ verify_installation() {
         log_success "NVM version: $NVM_VER"
     fi
     
-    # If there's a library issue, warn but don't fail (installation was successful)
+    # If there's a library issue, try to fix it
     if [ $library_issue -eq 1 ]; then
-        log_warning "Installation completed, but Node.js cannot run until system libraries are updated"
-        return 0  # Return success since installation itself was successful
+        log_error "Node.js cannot run due to GLIBCXX library issue"
+        log "This should have been fixed earlier, but attempting fix now..."
+        
+        # Try updating libraries
+        if try_update_libstdcxx; then
+            sleep 1
+            # Recheck
+            node_output=$(node --version 2>&1)
+            exit_code=$?
+            if [ $exit_code -eq 0 ] && ! echo "$node_output" | grep -q "GLIBCXX"; then
+                log_success "Node.js now works after library update!"
+                library_issue=0
+                verification_failed=0
+            fi
+        fi
+        
+        # If still not working, this is a real problem
+        if [ $library_issue -eq 1 ]; then
+            log_error "Could not automatically fix GLIBCXX issue"
+            log_error "Node.js is installed but cannot run"
+            log_error "Please run manually: sudo apt-get update && sudo apt-get upgrade && sudo apt-get install libstdc++6"
+            log_error "Or rebuild from source: nvm uninstall $NODE_VERSION && nvm install -s $NODE_VERSION"
+            error_exit "Node.js installation verification failed - Node.js cannot run due to library compatibility issues"
+        fi
     fi
     
     # If verification failed for other reasons, exit with error
@@ -626,6 +648,78 @@ main() {
         
         # Use the version in current session
         nvm use "$NODE_VERSION" || log_warning "Failed to switch to Node.js $NODE_VERSION"
+        
+        # Check if Node.js actually works (not just installed)
+        if ! verify_node_works; then
+            local node_error
+            node_error=$(node --version 2>&1 || echo "")
+            if echo "$node_error" | grep -q "GLIBCXX"; then
+                log_error "Node.js $NODE_VERSION is installed but cannot run due to GLIBCXX library issue"
+                log "Attempting to fix the issue..."
+                
+                # Try updating libraries first
+                if try_update_libstdcxx; then
+                    sleep 1
+                    if verify_node_works; then
+                        log_success "Node.js now works after library update!"
+                    else
+                        log "Library update didn't help, trying to rebuild from source..."
+                        # Need to rebuild from source
+                        if ! command -v make &>/dev/null || ! command -v g++ &>/dev/null; then
+                            log "Installing build tools..."
+                            if command -v apt-get &>/dev/null; then
+                                sudo apt-get update -qq 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
+                                sudo apt-get install -y build-essential python3 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || {
+                                    log_error "Failed to install build tools"
+                                }
+                            fi
+                        fi
+                        
+                        log "Removing broken binary installation..."
+                        nvm uninstall "$NODE_VERSION" 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
+                        
+                        log "Building Node.js $NODE_VERSION from source (this may take 10-30 minutes)..."
+                        if nvm install -s "$NODE_VERSION" 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:"; then
+                            if verify_node_works; then
+                                log_success "Node.js rebuilt from source and now works!"
+                            else
+                                error_exit "Node.js rebuilt but still cannot run"
+                            fi
+                        else
+                            error_exit "Failed to rebuild Node.js from source"
+                        fi
+                    fi
+                else
+                    # Update failed, try building from source
+                    log "Library update failed or insufficient, trying to rebuild from source..."
+                    if ! command -v make &>/dev/null || ! command -v g++ &>/dev/null; then
+                        log "Installing build tools..."
+                        if command -v apt-get &>/dev/null; then
+                            sudo apt-get update -qq 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
+                            sudo apt-get install -y build-essential python3 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || {
+                                log_error "Failed to install build tools"
+                            }
+                        fi
+                    fi
+                    
+                    log "Removing broken binary installation..."
+                    nvm uninstall "$NODE_VERSION" 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
+                    
+                    log "Building Node.js $NODE_VERSION from source (this may take 10-30 minutes)..."
+                    if nvm install -s "$NODE_VERSION" 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:"; then
+                        if verify_node_works; then
+                            log_success "Node.js rebuilt from source and now works!"
+                        else
+                            error_exit "Node.js rebuilt but still cannot run"
+                        fi
+                    else
+                        error_exit "Failed to rebuild Node.js from source"
+                    fi
+                fi
+            else
+                log_warning "Node.js is installed but verification failed: $node_error"
+            fi
+        fi
     else
         log "Node.js $NODE_VERSION is not installed. Installing..."
         install_node
