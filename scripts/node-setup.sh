@@ -119,9 +119,64 @@ get_libstdcxx_version() {
         return 1
     fi
     
-    # Use sort -V to get the highest version (version sort)
-    local max_version
-    max_version=$(echo "$glibcxx_versions" | sort -V -t. -k1,1n -k2,2n -k3,3n 2>/dev/null | tail -n 1)
+    # Normalize all versions to 3 components for proper comparison
+    # "3.4" becomes "3.4.0", "3.4.26" stays "3.4.26"
+    local normalized_list=""
+    while IFS= read -r version; do
+        local major minor patch
+        major=$(echo "$version" | cut -d. -f1)
+        minor=$(echo "$version" | cut -d. -f2)
+        patch=$(echo "$version" | cut -d. -f3)
+        patch="${patch:-0}"
+        normalized_list="${normalized_list}${major}.${minor}.${patch}"$'\n'
+    done <<< "$glibcxx_versions"
+    
+    # Sort and get the highest normalized version
+    local max_normalized
+    max_normalized=$(echo "$normalized_list" | sort -V 2>/dev/null | tail -n 1)
+    
+    if [ -z "$max_normalized" ]; then
+        echo ""
+        return 1
+    fi
+    
+    # Find the original version that matches this normalized maximum
+    # Prefer versions with patch numbers if they exist
+    local max_version=""
+    local max_major max_minor max_patch
+    max_major=$(echo "$max_normalized" | cut -d. -f1)
+    max_minor=$(echo "$max_normalized" | cut -d. -f2)
+    max_patch=$(echo "$max_normalized" | cut -d. -f3)
+    
+    # Look for the original version - prefer one with patch number if available
+    while IFS= read -r version; do
+        local v_major v_minor v_patch
+        v_major=$(echo "$version" | cut -d. -f1)
+        v_minor=$(echo "$version" | cut -d. -f2)
+        v_patch=$(echo "$version" | cut -d. -f3)
+        
+        if [ "$v_major" = "$max_major" ] && [ "$v_minor" = "$max_minor" ]; then
+            # If this version has a patch number and it matches, use it
+            if [ -n "$v_patch" ] && [ "$v_patch" = "$max_patch" ]; then
+                max_version="$version"
+                break
+            elif [ -z "$max_version" ]; then
+                # Store first matching version as fallback
+                max_version="$version"
+            fi
+        fi
+    done <<< "$glibcxx_versions"
+    
+    # If we found a version with patch number matching max_patch, use it
+    # Otherwise use what we found
+    if [ -z "$max_version" ]; then
+        # Fallback: construct from normalized if no match found
+        if [ "$max_patch" = "0" ]; then
+            max_version="${max_major}.${max_minor}"
+        else
+            max_version="$max_normalized"
+        fi
+    fi
     
     # Validate the result
     if [ -z "$max_version" ] || ! echo "$max_version" | grep -qE "^[0-9]+\.[0-9]+(\.[0-9]+)?$"; then
@@ -609,7 +664,7 @@ verify_installation() {
         npm_output=$(npm --version 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:" || echo "")
         if [ -n "$npm_output" ] && ! echo "$npm_output" | grep -q "GLIBCXX"; then
             NPM_VER=$(echo "$npm_output" | head -n 1 | tr -d '\n\r')
-            log_success "npm version: $NPM_VER"
+        log_success "npm version: $NPM_VER"
         else
             log_warning "Could not verify npm version (may be due to library compatibility issue)"
         fi
