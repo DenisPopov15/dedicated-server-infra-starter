@@ -125,18 +125,18 @@ ${DOMAIN} {
         # Remove server header for security
         -Server
         
-        # Enable CORS if needed (uncomment and customize)
-        # Access-Control-Allow-Origin *
-        # Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+        # Enable CORS if needed
+        Access-Control-Allow-Origin *
+        Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
     }
     
     # Health check endpoint (optional)
-    # @health {
-    #     path /health
-    # }
-    # handle @health {
-    #     respond "OK" 200
-    # }
+    @health {
+        path /health
+    }
+    handle @health {
+        respond "OK" 200
+    }
 }
 EOF
     log_success "Caddyfile created at ${CADDYFILE} with HTTPS configuration for ${DOMAIN}"
