@@ -716,6 +716,55 @@ configure_nvm_in_shell() {
     local current_user=$(whoami)
     local target_home="$HOME"
     
+    # Function to install NVM for a specific user (when running as root)
+    install_nvm_for_user() {
+        local target_user="$1"
+        local target_home=$(eval echo ~$target_user 2>/dev/null)
+        
+        if [ -z "$target_home" ] || [ "$target_home" = "~$target_user" ]; then
+            log_warning "Cannot determine home directory for user $target_user"
+            return 1
+        fi
+        
+        if [ ! -d "$target_home" ]; then
+            log_warning "Home directory $target_home does not exist for user $target_user"
+            return 1
+        fi
+        
+        # Check if NVM is already installed for this user
+        if [ -d "$target_home/.nvm" ] && [ -f "$target_home/.nvm/nvm.sh" ]; then
+            log "NVM already installed for user $target_user"
+            return 0
+        fi
+        
+        log "Installing NVM for user: $target_user (home: $target_home)"
+        
+        # Install NVM as the target user
+        if command -v curl &> /dev/null; then
+            if su - "$target_user" -c "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash" 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:"; then
+                log_success "NVM installed for user $target_user"
+                # Set ownership just in case
+                chown -R "$target_user:$target_user" "$target_home/.nvm" 2>/dev/null || true
+                return 0
+            else
+                log_warning "Failed to install NVM for user $target_user"
+                return 1
+            fi
+        elif command -v wget &> /dev/null; then
+            if su - "$target_user" -c "wget -qO- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash" 2>&1 | grep -v "tput: unknown terminal" | grep -v "manpath:"; then
+                log_success "NVM installed for user $target_user"
+                chown -R "$target_user:$target_user" "$target_home/.nvm" 2>/dev/null || true
+                return 0
+            else
+                log_warning "Failed to install NVM for user $target_user"
+                return 1
+            fi
+        else
+            log_warning "Neither curl nor wget available to install NVM for user $target_user"
+            return 1
+        fi
+    }
+    
     # Function to configure NVM for a specific user
     configure_for_user() {
         local target_user="$1"
@@ -793,18 +842,20 @@ configure_nvm_in_shell() {
         
         if [ -n "$found_users" ]; then
             if [ -t 0 ]; then
-                log "Would you like to configure NVM for these users as well? (y/N)"
-                read -t 10 -p "Configure for users: $found_users? (y/N) " -n 1 -r
+                log "Would you like to install and configure NVM for these users as well? (y/N)"
+                read -t 10 -p "Install for users: $found_users? (y/N) " -n 1 -r
                 echo
                 if [[ $REPLY =~ ^[Yy]$ ]]; then
                     for user in $found_users; do
+                        install_nvm_for_user "$user"
                         configure_for_user "$user"
                     done
                 fi
             else
-                # Non-interactive: auto-configure for common users (especially pi on Raspberry Pi)
-                log "Non-interactive mode: Auto-configuring NVM for detected users..."
+                # Non-interactive: auto-install and configure for common users (especially pi on Raspberry Pi)
+                log "Non-interactive mode: Auto-installing and configuring NVM for detected users..."
                 for user in $found_users; do
+                    install_nvm_for_user "$user"
                     configure_for_user "$user"
                 done
             fi
