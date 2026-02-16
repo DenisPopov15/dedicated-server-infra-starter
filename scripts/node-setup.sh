@@ -710,6 +710,8 @@ verify_installation() {
 
 # Function to configure NVM in shell profiles
 configure_nvm_in_shell() {
+    log "Configuring NVM in shell profiles..."
+    
     local nvm_dir="${NVM_DIR:-$HOME/.nvm}"
     local nvm_config=""
     nvm_config="export NVM_DIR=\"\$HOME/.nvm\"
@@ -717,55 +719,101 @@ configure_nvm_in_shell() {
 [ -s \"\$NVM_DIR/bash_completion\" ] && \\. \"\$NVM_DIR/bash_completion\""
     
     local configured=0
+    local files_configured=""
     
-    # Check and configure .bashrc
-    if [ -f "$HOME/.bashrc" ]; then
-        if ! grep -q "NVM_DIR" "$HOME/.bashrc" 2>/dev/null; then
-            log "Configuring NVM in ~/.bashrc..."
-            echo "" >> "$HOME/.bashrc"
-            echo "# NVM configuration" >> "$HOME/.bashrc"
-            echo "$nvm_config" >> "$HOME/.bashrc"
-            configured=1
+    # Function to check if NVM is already configured in a file
+    is_nvm_configured() {
+        local file="$1"
+        if [ -f "$file" ]; then
+            # Check for NVM_DIR export or nvm.sh sourcing
+            if grep -qE "(NVM_DIR|nvm\.sh)" "$file" 2>/dev/null; then
+                return 0
+            fi
+        fi
+        return 1
+    }
+    
+    # Function to add NVM config to a file
+    add_nvm_config() {
+        local file="$1"
+        local file_display="$2"
+        
+        if is_nvm_configured "$file"; then
+            log "NVM already configured in $file_display"
+            return 0
+        fi
+        
+        log "Adding NVM configuration to $file_display..."
+        if [ -f "$file" ]; then
+            # Append to existing file
+            {
+                echo ""
+                echo "# NVM configuration"
+                echo "$nvm_config"
+            } >> "$file"
         else
-            log "NVM already configured in ~/.bashrc"
+            # Create new file
+            {
+                echo "# NVM configuration"
+                echo "$nvm_config"
+            } > "$file"
         fi
-    else
-        # Create .bashrc if it doesn't exist
-        log "Creating ~/.bashrc and configuring NVM..."
-        echo "# NVM configuration" > "$HOME/.bashrc"
-        echo "$nvm_config" >> "$HOME/.bashrc"
-        configured=1
-    fi
-    
-    # Check and configure .zshrc
-    if [ -f "$HOME/.zshrc" ]; then
-        if ! grep -q "NVM_DIR" "$HOME/.zshrc" 2>/dev/null; then
-            log "Configuring NVM in ~/.zshrc..."
-            echo "" >> "$HOME/.zshrc"
-            echo "# NVM configuration" >> "$HOME/.zshrc"
-            echo "$nvm_config" >> "$HOME/.zshrc"
+        
+        if [ $? -eq 0 ]; then
             configured=1
+            files_configured="${files_configured}${file_display} "
+            log_success "NVM configured in $file_display"
+            return 0
         else
-            log "NVM already configured in ~/.zshrc"
+            log_warning "Failed to configure NVM in $file_display"
+            return 1
         fi
-    fi
+    }
     
-    # Also check .profile as a fallback
-    if [ -f "$HOME/.profile" ]; then
-        if ! grep -q "NVM_DIR" "$HOME/.profile" 2>/dev/null; then
-            log "Configuring NVM in ~/.profile..."
-            echo "" >> "$HOME/.profile"
-            echo "# NVM configuration" >> "$HOME/.profile"
-            echo "$nvm_config" >> "$HOME/.profile"
-            configured=1
-        fi
-    fi
+    # Configure .bashrc (most common)
+    add_nvm_config "$HOME/.bashrc" "~/.bashrc"
+    
+    # Configure .bash_profile (some systems use this instead)
+    add_nvm_config "$HOME/.bash_profile" "~/.bash_profile"
+    
+    # Configure .zshrc (if zsh is used)
+    add_nvm_config "$HOME/.zshrc" "~/.zshrc"
+    
+    # Configure .profile as a fallback (for sh and other shells)
+    add_nvm_config "$HOME/.profile" "~/.profile"
     
     if [ $configured -eq 1 ]; then
-        log_success "NVM has been configured in your shell profile(s)"
+        log_success "NVM has been configured in: $files_configured"
         log "NVM will be available in new terminal sessions"
+        log "To use NVM in current session, run: source ~/.bashrc"
+        
+        # Verify the configuration was actually written
+        if [ -n "$files_configured" ]; then
+            local first_file_display=$(echo "$files_configured" | awk '{print $1}')
+            local first_file=$(echo "$first_file_display" | sed "s|~|$HOME|")
+            if [ -f "$first_file" ] && grep -q "NVM_DIR" "$first_file" 2>/dev/null; then
+                log_success "Verified: NVM configuration is present in $first_file_display"
+            else
+                log_warning "Warning: Could not verify NVM configuration in $first_file_display"
+            fi
+        fi
     else
-        log_success "NVM is already configured in your shell profile(s)"
+        # Double-check if NVM is really configured
+        local found_config=0
+        for profile_file in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.profile"; do
+            if [ -f "$profile_file" ] && grep -qE "(NVM_DIR|nvm\.sh)" "$profile_file" 2>/dev/null; then
+                found_config=1
+                log "Found NVM configuration in: $profile_file"
+            fi
+        done
+        
+        if [ $found_config -eq 0 ]; then
+            log_warning "NVM configuration not found in any shell profile"
+            log "Attempting to add to ~/.bashrc..."
+            add_nvm_config "$HOME/.bashrc" "~/.bashrc"
+        else
+            log_success "NVM is already configured in your shell profile(s)"
+        fi
     fi
 }
 
