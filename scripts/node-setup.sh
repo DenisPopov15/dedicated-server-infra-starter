@@ -765,6 +765,45 @@ configure_nvm_in_shell() {
         fi
     }
     
+    # Function to install Node.js for a specific user
+    install_node_for_user() {
+        local target_user="$1"
+        local target_home=$(eval echo ~$target_user 2>/dev/null)
+        local node_version="$NODE_VERSION"
+        
+        if [ -z "$target_home" ] || [ "$target_home" = "~$target_user" ]; then
+            log_warning "Cannot determine home directory for user $target_user"
+            return 1
+        fi
+        
+        local user_nvm_dir="$target_home/.nvm"
+        if [ ! -d "$user_nvm_dir" ] || [ ! -f "$user_nvm_dir/nvm.sh" ]; then
+            log_warning "NVM not installed for user $target_user, cannot install Node.js"
+            return 1
+        fi
+        
+        log "Installing Node.js $node_version for user: $target_user"
+        
+        # Source NVM and install Node.js as the target user
+        # Chain commands with && to ensure they run in sequence
+        local install_cmd="export NVM_DIR=\"\$HOME/.nvm\" && [ -s \"\$NVM_DIR/nvm.sh\" ] && \. \"\$NVM_DIR/nvm.sh\" && nvm install $node_version && nvm alias default $node_version && nvm use $node_version"
+        
+        local install_output
+        install_output=$(su - "$target_user" -c "$install_cmd" 2>&1)
+        local install_exit=$?
+        
+        # Filter and display output
+        echo "$install_output" | grep -v "tput: unknown terminal" | grep -v "manpath:" || true
+        
+        if [ $install_exit -eq 0 ]; then
+            log_success "Node.js $node_version installed for user $target_user"
+            return 0
+        else
+            log_warning "Failed to install Node.js for user $target_user (exit code: $install_exit)"
+            return 1
+        fi
+    }
+    
     # Function to configure NVM for a specific user
     configure_for_user() {
         local target_user="$1"
@@ -828,38 +867,53 @@ configure_nvm_in_shell() {
     }
     
     if [ "$current_user" = "root" ]; then
-        log_warning "Script is running as root. NVM will be configured for root user."
+        # Detect the actual user who invoked sudo
+        local actual_user="${SUDO_USER:-}"
         
-        # Try to detect and configure for common non-root users
-        local common_users="pi ubuntu debian admin"
-        local found_users=""
-        for user in $common_users; do
-            if id "$user" &>/dev/null; then
-                found_users="${found_users}${user} "
-                log "Found user: $user"
-            fi
-        done
-        
-        if [ -n "$found_users" ]; then
-            if [ -t 0 ]; then
-                log "Would you like to install and configure NVM for these users as well? (y/N)"
-                read -t 10 -p "Install for users: $found_users? (y/N) " -n 1 -r
-                echo
-                if [[ $REPLY =~ ^[Yy]$ ]]; then
-                    for user in $found_users; do
-                        install_nvm_for_user "$user"
-                        configure_for_user "$user"
-                    done
-                fi
-            else
-                # Non-interactive: auto-install and configure for common users (especially pi on Raspberry Pi)
-                log "Non-interactive mode: Auto-installing and configuring NVM for detected users..."
-                for user in $found_users; do
-                    install_nvm_for_user "$user"
-                    configure_for_user "$user"
-                done
-            fi
+        # If SUDO_USER is not set, try multiple methods to detect the user
+        if [ -z "$actual_user" ] || [ "$actual_user" = "root" ]; then
+            # Method 1: Try to get from who command
+            actual_user=$(who am i 2>/dev/null | awk '{print $1}' | head -n 1)
         fi
+        
+        if [ -z "$actual_user" ] || [ "$actual_user" = "root" ]; then
+            # Method 2: Try to get from last command
+            actual_user=$(last -n 1 -w | awk '{print $1}' | head -n 1)
+        fi
+        
+        # If still not found, check common users (prioritize pi on Raspberry Pi)
+        if [ -z "$actual_user" ] || [ "$actual_user" = "root" ]; then
+            local common_users="pi ubuntu debian admin"
+            for user in $common_users; do
+                if id "$user" &>/dev/null 2>&1 && [ "$user" != "root" ]; then
+                    actual_user="$user"
+                    log "Auto-detected user: $actual_user (from common users list)"
+                    break
+                fi
+            done
+        fi
+        
+        if [ -n "$actual_user" ] && [ "$actual_user" != "root" ]; then
+            log "Detected user: $actual_user"
+            log "Installing NVM and Node.js for user: $actual_user"
+            
+            # Install NVM for the actual user
+            if install_nvm_for_user "$actual_user"; then
+                # Configure profiles
+                configure_for_user "$actual_user"
+                # Install Node.js
+                install_node_for_user "$actual_user"
+                log_success "NVM and Node.js setup completed for user: $actual_user"
+            else
+                log_warning "Failed to install NVM for user $actual_user"
+            fi
+        else
+            log_warning "Could not detect the actual user. NVM will be configured for root user only."
+            log_warning "To install for a specific user, run: sudo -u <username> bash <script>"
+        fi
+        
+        # Also configure for root
+        log "Also configuring NVM for root user..."
     fi
     
     local nvm_dir="${NVM_DIR:-$HOME/.nvm}"
