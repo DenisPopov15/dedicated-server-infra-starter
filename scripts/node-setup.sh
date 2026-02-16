@@ -733,6 +733,17 @@ configure_nvm_in_shell() {
         
         log "Configuring NVM for user: $target_user (home: $target_home)"
         
+        # Check if NVM is installed for this user
+        local user_nvm_dir="$target_home/.nvm"
+        if [ ! -d "$user_nvm_dir" ] || [ ! -f "$user_nvm_dir/nvm.sh" ]; then
+            log_warning "NVM is not installed in $user_nvm_dir for user $target_user"
+            log_warning "The profile will be configured, but NVM needs to be installed for this user"
+            log "To install NVM for $target_user, run this script as that user (without sudo)"
+            log "Or install NVM manually: curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash"
+        else
+            log_success "NVM found in $user_nvm_dir for user $target_user"
+        fi
+        
         local user_nvm_config="export NVM_DIR=\"\$HOME/.nvm\"
 [ -s \"\$NVM_DIR/nvm.sh\" ] && \\. \"\$NVM_DIR/nvm.sh\"
 [ -s \"\$NVM_DIR/bash_completion\" ] && \\. \"\$NVM_DIR/bash_completion\""
