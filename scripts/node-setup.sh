@@ -708,6 +708,67 @@ verify_installation() {
     fi
 }
 
+# Function to configure NVM in shell profiles
+configure_nvm_in_shell() {
+    local nvm_dir="${NVM_DIR:-$HOME/.nvm}"
+    local nvm_config=""
+    nvm_config="export NVM_DIR=\"\$HOME/.nvm\"
+[ -s \"\$NVM_DIR/nvm.sh\" ] && \\. \"\$NVM_DIR/nvm.sh\"
+[ -s \"\$NVM_DIR/bash_completion\" ] && \\. \"\$NVM_DIR/bash_completion\""
+    
+    local configured=0
+    
+    # Check and configure .bashrc
+    if [ -f "$HOME/.bashrc" ]; then
+        if ! grep -q "NVM_DIR" "$HOME/.bashrc" 2>/dev/null; then
+            log "Configuring NVM in ~/.bashrc..."
+            echo "" >> "$HOME/.bashrc"
+            echo "# NVM configuration" >> "$HOME/.bashrc"
+            echo "$nvm_config" >> "$HOME/.bashrc"
+            configured=1
+        else
+            log "NVM already configured in ~/.bashrc"
+        fi
+    else
+        # Create .bashrc if it doesn't exist
+        log "Creating ~/.bashrc and configuring NVM..."
+        echo "# NVM configuration" > "$HOME/.bashrc"
+        echo "$nvm_config" >> "$HOME/.bashrc"
+        configured=1
+    fi
+    
+    # Check and configure .zshrc
+    if [ -f "$HOME/.zshrc" ]; then
+        if ! grep -q "NVM_DIR" "$HOME/.zshrc" 2>/dev/null; then
+            log "Configuring NVM in ~/.zshrc..."
+            echo "" >> "$HOME/.zshrc"
+            echo "# NVM configuration" >> "$HOME/.zshrc"
+            echo "$nvm_config" >> "$HOME/.zshrc"
+            configured=1
+        else
+            log "NVM already configured in ~/.zshrc"
+        fi
+    fi
+    
+    # Also check .profile as a fallback
+    if [ -f "$HOME/.profile" ]; then
+        if ! grep -q "NVM_DIR" "$HOME/.profile" 2>/dev/null; then
+            log "Configuring NVM in ~/.profile..."
+            echo "" >> "$HOME/.profile"
+            echo "# NVM configuration" >> "$HOME/.profile"
+            echo "$nvm_config" >> "$HOME/.profile"
+            configured=1
+        fi
+    fi
+    
+    if [ $configured -eq 1 ]; then
+        log_success "NVM has been configured in your shell profile(s)"
+        log "NVM will be available in new terminal sessions"
+    else
+        log_success "NVM is already configured in your shell profile(s)"
+    fi
+}
+
 # Function to display post-installation instructions
 show_post_install_instructions() {
     echo
@@ -716,11 +777,7 @@ show_post_install_instructions() {
     log "Post-installation notes:"
     echo "1. NVM is installed in: ${NVM_DIR:-$HOME/.nvm}"
     echo "2. Node.js $NODE_VERSION is set as the default version"
-    echo "3. To use NVM in new terminal sessions, add the following to your ~/.bashrc or ~/.zshrc:"
-    echo ""
-    echo "   export NVM_DIR=\"\$HOME/.nvm\""
-    echo "   [ -s \"\$NVM_DIR/nvm.sh\" ] && \\. \"\$NVM_DIR/nvm.sh\""
-    echo "   [ -s \"\$NVM_DIR/bash_completion\" ] && \\. \"\$NVM_DIR/bash_completion\""
+    echo "3. NVM has been automatically configured in your shell profile(s)"
     echo ""
     log "Useful commands:"
     echo "  - nvm list                    # List installed Node.js versions"
@@ -729,6 +786,9 @@ show_post_install_instructions() {
     echo "  - nvm alias default <version> # Set default Node.js version"
     echo "  - node --version              # Check current Node.js version"
     echo "  - npm --version               # Check npm version"
+    echo ""
+    log "Note: If NVM is not available in your current session, start a new terminal or run:"
+    echo "  source ~/.bashrc  # or source ~/.zshrc"
     echo ""
 }
 
@@ -865,6 +925,9 @@ main() {
     
     # Verify installation
     verify_installation
+    
+    # Configure NVM in shell profiles
+    configure_nvm_in_shell
     
     # Show post-installation instructions
     show_post_install_instructions
