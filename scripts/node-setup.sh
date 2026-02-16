@@ -712,6 +712,94 @@ verify_installation() {
 configure_nvm_in_shell() {
     log "Configuring NVM in shell profiles..."
     
+    # Detect if running as root and warn
+    local current_user=$(whoami)
+    local target_home="$HOME"
+    
+    # Function to configure NVM for a specific user
+    configure_for_user() {
+        local target_user="$1"
+        local target_home=$(eval echo ~$target_user 2>/dev/null)
+        
+        if [ -z "$target_home" ] || [ "$target_home" = "~$target_user" ]; then
+            log_warning "Cannot determine home directory for user $target_user"
+            return 1
+        fi
+        
+        if [ ! -d "$target_home" ]; then
+            log_warning "Home directory $target_home does not exist for user $target_user"
+            return 1
+        fi
+        
+        log "Configuring NVM for user: $target_user (home: $target_home)"
+        
+        local user_nvm_config="export NVM_DIR=\"\$HOME/.nvm\"
+[ -s \"\$NVM_DIR/nvm.sh\" ] && \\. \"\$NVM_DIR/nvm.sh\"
+[ -s \"\$NVM_DIR/bash_completion\" ] && \\. \"\$NVM_DIR/bash_completion\""
+        
+        # Configure .bash_profile (most important for SSH)
+        local bash_profile="$target_home/.bash_profile"
+        if [ ! -f "$bash_profile" ] || ! grep -qE "(NVM_DIR|nvm\.sh)" "$bash_profile" 2>/dev/null; then
+            {
+                if [ -f "$bash_profile" ] && [ -s "$bash_profile" ]; then
+                    echo ""
+                fi
+                echo "# NVM configuration - Added by node-setup.sh"
+                echo "$user_nvm_config"
+            } >> "$bash_profile" 2>/dev/null && log_success "Configured ~/.bash_profile for $target_user" || log_warning "Failed to configure ~/.bash_profile for $target_user"
+        fi
+        
+        # Also configure .bashrc
+        local bashrc="$target_home/.bashrc"
+        if [ ! -f "$bashrc" ] || ! grep -qE "(NVM_DIR|nvm\.sh)" "$bashrc" 2>/dev/null; then
+            {
+                if [ -f "$bashrc" ] && [ -s "$bashrc" ]; then
+                    echo ""
+                fi
+                echo "# NVM configuration - Added by node-setup.sh"
+                echo "$user_nvm_config"
+            } >> "$bashrc" 2>/dev/null && log_success "Configured ~/.bashrc for $target_user" || log_warning "Failed to configure ~/.bashrc for $target_user"
+        fi
+        
+        # Set proper ownership if running as root
+        if [ "$current_user" = "root" ]; then
+            chown "$target_user:$target_user" "$bash_profile" "$bashrc" 2>/dev/null || true
+        fi
+    }
+    
+    if [ "$current_user" = "root" ]; then
+        log_warning "Script is running as root. NVM will be configured for root user."
+        
+        # Try to detect and configure for common non-root users
+        local common_users="pi ubuntu debian admin"
+        local found_users=""
+        for user in $common_users; do
+            if id "$user" &>/dev/null; then
+                found_users="${found_users}${user} "
+                log "Found user: $user"
+            fi
+        done
+        
+        if [ -n "$found_users" ]; then
+            if [ -t 0 ]; then
+                log "Would you like to configure NVM for these users as well? (y/N)"
+                read -t 10 -p "Configure for users: $found_users? (y/N) " -n 1 -r
+                echo
+                if [[ $REPLY =~ ^[Yy]$ ]]; then
+                    for user in $found_users; do
+                        configure_for_user "$user"
+                    done
+                fi
+            else
+                # Non-interactive: auto-configure for common users (especially pi on Raspberry Pi)
+                log "Non-interactive mode: Auto-configuring NVM for detected users..."
+                for user in $found_users; do
+                    configure_for_user "$user"
+                done
+            fi
+        fi
+    fi
+    
     local nvm_dir="${NVM_DIR:-$HOME/.nvm}"
     local nvm_config=""
     nvm_config="export NVM_DIR=\"\$HOME/.nvm\"
@@ -737,82 +825,124 @@ configure_nvm_in_shell() {
     add_nvm_config() {
         local file="$1"
         local file_display="$2"
+        local force="${3:-0}"  # Optional force parameter
         
-        if is_nvm_configured "$file"; then
+        # Check if already configured (unless forcing)
+        if [ $force -eq 0 ] && is_nvm_configured "$file"; then
             log "NVM already configured in $file_display"
             return 0
         fi
         
         log "Adding NVM configuration to $file_display..."
-        if [ -f "$file" ]; then
-            # Append to existing file
-            {
-                echo ""
-                echo "# NVM configuration"
-                echo "$nvm_config"
-            } >> "$file"
-        else
-            # Create new file
-            {
-                echo "# NVM configuration"
-                echo "$nvm_config"
-            } > "$file"
+        
+        # Create directory if needed
+        local file_dir=$(dirname "$file")
+        if [ ! -d "$file_dir" ]; then
+            mkdir -p "$file_dir" 2>/dev/null || {
+                log_warning "Cannot create directory for $file_display"
+                return 1
+            }
         fi
         
-        if [ $? -eq 0 ]; then
-            configured=1
-            files_configured="${files_configured}${file_display} "
-            log_success "NVM configured in $file_display"
-            return 0
+        # Append or create file
+        {
+            if [ -f "$file" ] && [ -s "$file" ]; then
+                echo ""
+            fi
+            echo "# NVM configuration - Added by node-setup.sh"
+            echo "$nvm_config"
+        } >> "$file" 2>/dev/null
+        
+        local exit_code=$?
+        if [ $exit_code -eq 0 ]; then
+            # Verify it was written
+            if [ -f "$file" ] && grep -q "NVM_DIR" "$file" 2>/dev/null; then
+                configured=1
+                files_configured="${files_configured}${file_display} "
+                log_success "NVM configured in $file_display"
+                return 0
+            else
+                log_warning "Configuration written but could not verify in $file_display"
+                return 1
+            fi
         else
-            log_warning "Failed to configure NVM in $file_display"
+            log_warning "Failed to write NVM configuration to $file_display (exit code: $exit_code)"
             return 1
         fi
     }
     
-    # Configure .bashrc (most common)
+    # Configure .bashrc (most common for interactive shells)
     add_nvm_config "$HOME/.bashrc" "~/.bashrc"
     
-    # Configure .bash_profile (some systems use this instead)
+    # Configure .bash_profile (used for login shells, especially SSH)
+    # Also ensure it sources .bashrc if it exists
+    if [ -f "$HOME/.bash_profile" ]; then
+        # Check if .bash_profile sources .bashrc
+        if ! grep -qE "\.bashrc|source.*bashrc" "$HOME/.bash_profile" 2>/dev/null && [ -f "$HOME/.bashrc" ]; then
+            log "Ensuring ~/.bash_profile sources ~/.bashrc..."
+            {
+                echo ""
+                echo "# Source .bashrc if it exists"
+                echo "if [ -f ~/.bashrc ]; then"
+                echo "    . ~/.bashrc"
+                echo "fi"
+            } >> "$HOME/.bash_profile"
+        fi
+    fi
     add_nvm_config "$HOME/.bash_profile" "~/.bash_profile"
     
     # Configure .zshrc (if zsh is used)
     add_nvm_config "$HOME/.zshrc" "~/.zshrc"
     
     # Configure .profile as a fallback (for sh and other shells)
+    # Also ensure it sources .bashrc if it exists
+    if [ -f "$HOME/.profile" ]; then
+        # Check if .profile sources .bashrc
+        if ! grep -qE "\.bashrc|source.*bashrc" "$HOME/.profile" 2>/dev/null && [ -f "$HOME/.bashrc" ]; then
+            log "Ensuring ~/.profile sources ~/.bashrc..."
+            {
+                echo ""
+                echo "# Source .bashrc if it exists"
+                echo "if [ -f ~/.bashrc ]; then"
+                echo "    . ~/.bashrc"
+                echo "fi"
+            } >> "$HOME/.profile"
+        fi
+    fi
     add_nvm_config "$HOME/.profile" "~/.profile"
     
-    if [ $configured -eq 1 ]; then
-        log_success "NVM has been configured in: $files_configured"
-        log "NVM will be available in new terminal sessions"
-        log "To use NVM in current session, run: source ~/.bashrc"
-        
-        # Verify the configuration was actually written
-        if [ -n "$files_configured" ]; then
-            local first_file_display=$(echo "$files_configured" | awk '{print $1}')
-            local first_file=$(echo "$first_file_display" | sed "s|~|$HOME|")
-            if [ -f "$first_file" ] && grep -q "NVM_DIR" "$first_file" 2>/dev/null; then
-                log_success "Verified: NVM configuration is present in $first_file_display"
-            else
-                log_warning "Warning: Could not verify NVM configuration in $first_file_display"
-            fi
+    # Final verification - check all profile files
+    log "Verifying NVM configuration..."
+    local verified_files=""
+    for profile_file in "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile"; do
+        local file_display="~/.$(basename "$profile_file")"
+        if [ -f "$profile_file" ] && grep -qE "(NVM_DIR|nvm\.sh)" "$profile_file" 2>/dev/null; then
+            verified_files="${verified_files}${file_display} "
         fi
+    done
+    
+    if [ -n "$verified_files" ]; then
+        log_success "NVM configuration verified in: $verified_files"
+        log "NVM will be available in new terminal sessions"
+        log ""
+        log "To use NVM in your current session, run one of:"
+        log "  source ~/.bash_profile  # For login shells (SSH)"
+        log "  source ~/.bashrc         # For interactive shells"
     else
-        # Double-check if NVM is really configured
-        local found_config=0
-        for profile_file in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.zshrc" "$HOME/.profile"; do
-            if [ -f "$profile_file" ] && grep -qE "(NVM_DIR|nvm\.sh)" "$profile_file" 2>/dev/null; then
-                found_config=1
-                log "Found NVM configuration in: $profile_file"
-            fi
-        done
+        log_error "NVM configuration was not found in any profile file!"
+        log "Attempting to force-add to ~/.bash_profile and ~/.bashrc..."
+        add_nvm_config "$HOME/.bash_profile" "~/.bash_profile" 1
+        add_nvm_config "$HOME/.bashrc" "~/.bashrc" 1
         
-        if [ $found_config -eq 0 ]; then
-            log_warning "NVM configuration not found in any shell profile"
-            log "Attempting to add to ~/.bashrc..."
-            add_nvm_config "$HOME/.bashrc" "~/.bashrc"
+        # Final check
+        if [ -f "$HOME/.bash_profile" ] && grep -q "NVM_DIR" "$HOME/.bash_profile" 2>/dev/null; then
+            log_success "NVM configuration added to ~/.bash_profile"
         else
-            log_success "NVM is already configured in your shell profile(s)"
+            log_error "Failed to add NVM configuration. Please add manually:"
+            echo ""
+            echo "Add these lines to ~/.bash_profile:"
+            echo "$nvm_config"
+            echo ""
         fi
     fi
 }
