@@ -55,23 +55,76 @@ fi
 
 log "Starting PM2 setup for project at: $PROJECT_PATH"
 
+# Detect if running as root and determine the actual user
+ACTUAL_USER=""
+if [ "$EUID" -eq 0 ]; then
+    # Running as root, try to get the original user
+    if [ -n "${SUDO_USER:-}" ]; then
+        ACTUAL_USER="$SUDO_USER"
+        log "Detected running as root via sudo. Using user: $ACTUAL_USER"
+    else
+        # Try to extract user from project path (e.g., /home/pi/...)
+        if [[ "$PROJECT_PATH" =~ ^/home/([^/]+) ]]; then
+            ACTUAL_USER="${BASH_REMATCH[1]}"
+            log "Detected running as root. Inferred user from path: $ACTUAL_USER"
+        else
+            log_warning "Running as root but cannot determine original user. Will try to find npm in common locations."
+        fi
+    fi
+else
+    ACTUAL_USER=$(whoami)
+    log "Running as user: $ACTUAL_USER"
+fi
+
+# Function to run a command as the actual user (if we're root)
+run_as_user() {
+    if [ "$EUID" -eq 0 ] && [ -n "$ACTUAL_USER" ]; then
+        # Run as the actual user with their full environment
+        su - "$ACTUAL_USER" -c "$*"
+    else
+        # Run normally
+        eval "$*"
+    fi
+}
+
+# Function to check if a command exists for the actual user
+command_exists_for_user() {
+    local cmd="$1"
+    if [ "$EUID" -eq 0 ] && [ -n "$ACTUAL_USER" ]; then
+        su - "$ACTUAL_USER" -c "command -v $cmd" &> /dev/null
+    else
+        command -v "$cmd" &> /dev/null
+    fi
+}
+
+# Function to get command output from the actual user
+get_command_output() {
+    local cmd="$1"
+    if [ "$EUID" -eq 0 ] && [ -n "$ACTUAL_USER" ]; then
+        su - "$ACTUAL_USER" -c "$cmd"
+    else
+        eval "$cmd"
+    fi
+}
+
 # Check if PM2 is already installed
-if command -v pm2 &> /dev/null; then
-    PM2_VERSION=$(pm2 --version)
+if command_exists_for_user "pm2"; then
+    PM2_VERSION=$(get_command_output "pm2 --version")
     log_success "PM2 is already installed: v$PM2_VERSION"
 else
     log "PM2 is not installed. Installing PM2 globally..."
     
     # Check if npm is available
-    if ! command -v npm &> /dev/null; then
-        error_exit "npm is not installed. Please install Node.js and npm first."
+    if ! command_exists_for_user "npm"; then
+        error_exit "npm is not installed for user $ACTUAL_USER. Please install Node.js and npm first."
     fi
     
     # Install PM2 globally
-    if npm install -g pm2; then
-        log_success "PM2 installed successfully: v$(pm2 --version)"
+    if run_as_user "npm install -g pm2"; then
+        PM2_VERSION=$(get_command_output "pm2 --version")
+        log_success "PM2 installed successfully: v$PM2_VERSION"
     else
-        error_exit "Failed to install PM2. Make sure you have proper permissions (may need sudo)."
+        error_exit "Failed to install PM2. Make sure you have proper permissions."
     fi
 fi
 
@@ -79,12 +132,18 @@ fi
 log "Navigating to project directory: $PROJECT_PATH"
 cd "$PROJECT_PATH" || error_exit "Failed to navigate to project directory: $PROJECT_PATH"
 
-# Create logs directory
+# Create logs directory (as the actual user to ensure proper permissions)
 log "Creating logs directory..."
-if mkdir -p logs; then
-    log_success "Logs directory created/verified: $(pwd)/logs"
+if [ "$EUID" -eq 0 ] && [ -n "$ACTUAL_USER" ]; then
+    # Create as the actual user
+    su - "$ACTUAL_USER" -c "mkdir -p '$PROJECT_PATH/logs'"
+    log_success "Logs directory created/verified: $PROJECT_PATH/logs"
 else
-    error_exit "Failed to create logs directory"
+    if mkdir -p logs; then
+        log_success "Logs directory created/verified: $(pwd)/logs"
+    else
+        error_exit "Failed to create logs directory"
+    fi
 fi
 
 # Check if ecosystem.config.js exists
@@ -96,15 +155,15 @@ fi
 
 # Stop any existing PM2 processes for this app (if any)
 log "Checking for existing PM2 processes..."
-if pm2 list | grep -q "telegram-bot"; then
+if run_as_user "pm2 list" | grep -q "telegram-bot"; then
     log_warning "Found existing 'telegram-bot' process. Stopping it..."
-    pm2 stop telegram-bot || true
-    pm2 delete telegram-bot || true
+    run_as_user "pm2 stop telegram-bot" || true
+    run_as_user "pm2 delete telegram-bot" || true
 fi
 
 # Start application with PM2
 log "Starting application with PM2..."
-if pm2 start ecosystem.config.js --env production; then
+if run_as_user "cd '$PROJECT_PATH' && pm2 start ecosystem.config.js --env production"; then
     log_success "Application started with PM2"
 else
     error_exit "Failed to start application with PM2. Check ecosystem.config.js configuration."
@@ -112,13 +171,13 @@ fi
 
 # Display PM2 status
 log "PM2 process status:"
-pm2 list
+run_as_user "pm2 list"
 
 # Setup PM2 to start on system reboot
 log "Setting up PM2 to start on system reboot..."
 
 # Get the startup command from PM2
-STARTUP_CMD=$(pm2 startup | grep -E "sudo.*pm2" || true)
+STARTUP_CMD=$(run_as_user "pm2 startup" | grep -E "sudo.*pm2" || true)
 
 if [ -n "$STARTUP_CMD" ]; then
     log "PM2 startup command generated. Executing it..."
@@ -139,7 +198,7 @@ fi
 
 # Save PM2 process list
 log "Saving PM2 process list..."
-if pm2 save; then
+if run_as_user "pm2 save"; then
     log_success "PM2 process list saved"
 else
     log_warning "Failed to save PM2 process list"
@@ -147,7 +206,7 @@ fi
 
 # Install PM2 server monitoring module
 log "Installing PM2 server monitoring module..."
-if pm2 install pm2-server-monit; then
+if run_as_user "pm2 install pm2-server-monit"; then
     log_success "PM2 server monitoring module installed successfully"
 else
     log_warning "Failed to install PM2 server monitoring module"
@@ -155,11 +214,11 @@ fi
 
 # Configure PM2 server monitoring
 log "Configuring PM2 server monitoring..."
-pm2 set pm2-server-monit:cpu true
-pm2 set pm2-server-monit:memory true
-pm2 set pm2-server-monit:network true
-pm2 set pm2-server-monit:disk false
-pm2 set pm2-server-monit:interval 20
+run_as_user "pm2 set pm2-server-monit:cpu true"
+run_as_user "pm2 set pm2-server-monit:memory true"
+run_as_user "pm2 set pm2-server-monit:network true"
+run_as_user "pm2 set pm2-server-monit:disk false"
+run_as_user "pm2 set pm2-server-monit:interval 20"
 log_success "PM2 server monitoring configured"
 
 
@@ -167,7 +226,7 @@ log_success "PM2 server monitoring configured"
 log_success "PM2 setup completed successfully!"
 echo ""
 log "PM2 process information:"
-pm2 list
+run_as_user "pm2 list"
 echo ""
 log "Useful PM2 commands:"
 log "  - View logs: pm2 logs"
