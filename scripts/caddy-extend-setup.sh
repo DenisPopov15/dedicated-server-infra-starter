@@ -2,12 +2,13 @@
 
 # Extend an existing Caddy install (after scripts/caddy-setup.sh) with a second site:
 # reverse_proxy from DOMAIN to localhost:PORT.
+# Typical setup: first app on 3000 (caddy-setup.sh), further apps on 3001, 3002, ...
 #
 # Usage:
 #   sudo ./caddy-extend-setup.sh <port> <domain>
 # Examples:
-#   sudo ./caddy-extend-setup.sh 4000 api.example.duckdns.org
-#   sudo ./caddy-extend-setup.sh 8080 second.example.com
+#   sudo ./caddy-extend-setup.sh 3001 app2.example.duckdns.org
+#   sudo ./caddy-extend-setup.sh 3002 app3.example.com
 
 set -euo pipefail
 
@@ -45,11 +46,13 @@ fi
 if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
     echo "Usage: sudo $0 <port> <domain>" >&2
     echo "  Adds a Caddy site for <domain> -> reverse_proxy localhost:<port>" >&2
+    echo "  Example: sudo $0 3001 app2.example.duckdns.org  (extra apps often use 3001, 3002, ...)" >&2
     exit 0
 fi
 
 if [ $# -ne 2 ]; then
     echo "Usage: sudo $0 <port> <domain>" >&2
+    echo "  Example: sudo $0 3001 app2.example.duckdns.org" >&2
     exit 1
 fi
 
