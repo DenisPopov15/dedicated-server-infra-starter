@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# GitHub Actions Runner setup for macOS (LaunchDaemon via runner svc.sh).
+# GitHub Actions Runner setup for macOS (per-user LaunchAgent via runner svc.sh; must not run svc.sh as root).
 # Same usage and flow as runer-setup.sh (Linux), adapted for Darwin.
 #
 # Usage:
@@ -140,13 +140,21 @@ if [ $? -ne 0 ]; then
     error_exit "Failed to setup runner as user ${RUNNER_USER}"
 fi
 
-log "Installing runner service (LaunchDaemon)..."
-cd "${RUNNER_HOME}/actions-runner"
-./svc.sh install "${RUNNER_USER}" || error_exit "Failed to install runner service"
+# darwin.svc.sh.template: "Must not run with sudo" if uid 0 — install is under ~/Library/LaunchAgents for RUNNER_USER.
+run_svc_as_runner() {
+    local svc_cmd="$1"
+    sudo -u "${RUNNER_USER}" -H bash -lc "cd '${RUNNER_HOME}/actions-runner' && ./svc.sh ${svc_cmd}"
+}
+
+log "Ensuring ${RUNNER_HOME}/actions-runner is owned by ${RUNNER_USER}"
+chown -R "${RUNNER_USER}:staff" "${RUNNER_HOME}/actions-runner"
+
+log "Installing runner service (LaunchAgent for user ${RUNNER_USER})..."
+run_svc_as_runner install || error_exit "Failed to install runner service"
 
 log "Starting runner service..."
-./svc.sh start || error_exit "Failed to start runner service"
+run_svc_as_runner start || error_exit "Failed to start runner service"
 
 log "GitHub Actions Runner setup completed successfully!"
 log "Service status:"
-./svc.sh status || true
+run_svc_as_runner status || true
