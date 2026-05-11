@@ -4,12 +4,17 @@
 # Same usage and flow as runer-setup.sh (Linux), adapted for Darwin.
 #
 # Usage:
-#   Local:  ./runer-setup-macos.sh <orgName> <token> <labels>
-#   Remote: curl -s <script-url> | sudo bash -s <orgName> <token> <labels>
+#   Local:  ./runer-setup-macos.sh <orgName> <token> <labels> [runnerUser]
+#   Remote: curl -s <script-url> | sudo bash -s <orgName> <token> <labels> [runnerUser]
 #
 # Examples:
 #   sudo ./runer-setup-macos.sh my-org ghp_xxxxxxxxxxxx deployment,development
-#   curl -s https://example.com/runer-setup-macos.sh | sudo bash -s my-org ghp_xxxxxxxxxxxx deployment,development
+#   sudo ./runer-setup-macos.sh my-org ghp_xxxxxxxxxxxx deployment,development alice
+#   curl -s https://example.com/runer-setup-macos.sh | sudo bash -s -- my-org ghp_xxxxxxxxxxxx deployment,development
+#   curl -s https://example.com/runer-setup-macos.sh | sudo bash -s -- my-org TOKEN labels alice
+#
+# runnerUser defaults to github (same default as runer-setup.sh). On macOS use the account that has a
+# GUI login if you rely on the stock LaunchAgent + svc.sh start.
 #
 # Prerequisites:
 #   - Must run as root (use sudo)
@@ -31,15 +36,16 @@ if [ "$(uname -s)" != "Darwin" ]; then
     error_exit "This script is for macOS only. Detected: $(uname -s)"
 fi
 
-if [ $# -ne 3 ]; then
-    error_exit "Usage: $0 <orgName> <token> <labels>
-    Example: $0 my-org ghp_xxxxxxxxxxxx deployment,development"
+if [ $# -ne 3 ] && [ $# -ne 4 ]; then
+    error_exit "Usage: $0 <orgName> <token> <labels> [runnerUser]
+    Example: $0 my-org ghp_xxxxxxxxxxxx deployment,development
+    Example: $0 my-org ghp_xxxxxxxxxxxx deployment,development alice"
 fi
 
 ORG_NAME="$1"
 TOKEN="$2"
 LABELS="$3"
-RUNNER_USER="github"
+RUNNER_USER="${4:-github}"
 RUNNER_VERSION="2.321.0"
 RUNNER_HOME="/Users/${RUNNER_USER}"
 
@@ -62,6 +68,7 @@ RUNNER_DOWNLOAD_URL="https://github.com/actions/runner/releases/download/v${RUNN
 log "Starting GitHub Actions Runner setup (macOS)..."
 log "Organization: ${ORG_NAME}"
 log "Labels: ${LABELS}"
+log "Runner user: ${RUNNER_USER} (4th arg [runnerUser]; default: github)"
 log "Detected architecture: ${ARCH} (using ${RUNNER_OS_ARCH})"
 
 if [ "${EUID:-$(id -u)}" -ne 0 ]; then
@@ -132,8 +139,13 @@ else
     echo "Runner already extracted, skipping extraction"
 fi
 
-echo "Configuring runner..."
-./config.sh --url https://github.com/${ORG_NAME} --token ${TOKEN} --labels ${LABELS} --unattended || exit 1
+if [ -f ".runner" ]; then
+    echo "Runner is already configured (.runner exists); skipping ./config.sh"
+    echo "To re-register: ./config.sh remove --token <token>, then re-run with a new registration token."
+else
+    echo "Configuring runner..."
+    ./config.sh --url https://github.com/${ORG_NAME} --token ${TOKEN} --labels ${LABELS} --unattended || exit 1
+fi
 EOF
 
 if [ $? -ne 0 ]; then
