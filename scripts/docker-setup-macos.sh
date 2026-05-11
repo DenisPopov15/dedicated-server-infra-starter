@@ -1,13 +1,18 @@
 #!/bin/bash
 
 # Docker and Docker Compose installation for macOS (Docker Desktop via Homebrew).
-# Intended for interactive or SSH sessions on Mac mini / macOS hosts.
+# Intended for Mac mini / macOS hosts, including non-interactive runners (CI, IDE, Node).
+# No read(1) or password prompts: prepare /usr/local paths via root, or passwordless
+# sudo (sudo -n), or exit with one-shot commands to run separately.
+# If Docker is already installed: continues with brew (idempotent) unless you set
+#   DOCKER_SETUP_MACOS_SKIP_IF_INSTALLED=1
 #
 # Usage: ./docker-setup-macos.sh [user1] [user2] [user3] ...
 # If no usernames are provided, current user will be added to the docker group
 # when that step runs (see main: same conditions as docker-setup.sh for Ubuntu).
 # Examples:
 #   ./docker-setup-macos.sh
+#   DOCKER_SETUP_MACOS_SKIP_IF_INSTALLED=1 ./docker-setup-macos.sh   # group steps only if docker exists
 #   ./docker-setup-macos.sh alice bob
 #   sudo ./docker-setup-macos.sh root github deploy   # uses SUDO_USER for Homebrew when needed
 
@@ -88,15 +93,15 @@ ensure_brew_in_path() {
 }
 
 check_existing_docker() {
-    if command -v docker &>/dev/null; then
-        print_warning "Docker is already installed: $(docker --version)"
-        read -p "Do you want to continue and potentially reinstall/update? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_status "Skipping Docker installation. Will only add users to docker group if specified."
-            return 1
-        fi
+    if ! command -v docker &>/dev/null; then
+        return 0
     fi
+    print_warning "Docker is already installed: $(docker --version)"
+    if [[ "${DOCKER_SETUP_MACOS_SKIP_IF_INSTALLED:-}" == "1" ]]; then
+        print_status "DOCKER_SETUP_MACOS_SKIP_IF_INSTALLED=1: skipping Homebrew Docker install."
+        return 1
+    fi
+    print_status "Continuing with brew install --cask docker (idempotent update). Set DOCKER_SETUP_MACOS_SKIP_IF_INSTALLED=1 to skip."
     return 0
 }
 
@@ -138,7 +143,66 @@ update_system() {
     print_success "Homebrew metadata updated"
 }
 
+# The docker-desktop cask links binaries into /usr/local/bin and
+# /usr/local/cli-plugins/docker-compose. Homebrew runs sudo to mkdir those parents
+# when they are missing or not writable by the brew user, which fails without a TTY
+# (e.g. password prompt: "sudo: a terminal is required").
+ensure_usr_local_paths_for_docker_cask() {
+    local bu grp
+    bu="$(brew_invoking_user)"
+    grp="$(id -gn "$bu" 2>/dev/null || echo staff)"
+    local targets=(/usr/local/bin /usr/local/cli-plugins)
+    local needs_fix=false
+
+    for d in "${targets[@]}"; do
+        if [[ ! -d "$d" ]]; then
+            needs_fix=true
+            break
+        fi
+        if [[ $EUID -eq 0 ]]; then
+            if ! sudo -u "$bu" test -w "$d" 2>/dev/null; then
+                needs_fix=true
+                break
+            fi
+        else
+            if [[ "$(id -un)" != "$bu" ]]; then
+                print_error "brew user ($bu) does not match current user ($(id -un)); cannot prepare /usr/local paths."
+                exit 1
+            fi
+            if ! [[ -w "$d" ]]; then
+                needs_fix=true
+                break
+            fi
+        fi
+    done
+
+    if [[ "$needs_fix" != true ]]; then
+        return 0
+    fi
+
+    if [[ $EUID -eq 0 ]]; then
+        print_status "Creating /usr/local/bin and /usr/local/cli-plugins (owned by $bu) for Docker Desktop cask..."
+        mkdir -p "${targets[@]}"
+        chown -R "${bu}:${grp}" "${targets[@]}"
+        return 0
+    fi
+
+    if sudo -n true 2>/dev/null; then
+        print_status "Creating /usr/local paths for Docker Desktop (passwordless sudo)..."
+        sudo -n mkdir -p "${targets[@]}"
+        sudo -n chown -R "${bu}:${grp}" "${targets[@]}"
+        return 0
+    fi
+
+    print_error "Cannot create or chown /usr/local/bin and /usr/local/cli-plugins without non-interactive sudo (this script never prompts for a password)."
+    print_status "Run the following once on the host (any method that provides a TTY for sudo), then re-run:"
+    echo "  sudo mkdir -p /usr/local/bin /usr/local/cli-plugins"
+    echo "  sudo chown -R \"${bu}:${grp}\" /usr/local/bin /usr/local/cli-plugins"
+    exit 1
+}
+
 install_docker_desktop() {
+    ensure_usr_local_paths_for_docker_cask
     print_status "Installing Docker Desktop (includes Docker Compose plugin)..."
     run_brew install --cask docker
     print_success "Docker Desktop cask installed"
