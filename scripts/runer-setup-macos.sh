@@ -93,13 +93,18 @@ create_runner_user_macos() {
     log "User ${RUNNER_USER} created successfully (password is random and not logged)"
 }
 
+# sysadminctl only records NFSHomeDirectory; it often does not create the folder ("assigned (not created!)").
+ensure_runner_home() {
+    if [ ! -d "${RUNNER_HOME}" ]; then
+        log "Creating home directory ${RUNNER_HOME}"
+        mkdir -p "${RUNNER_HOME}"
+    fi
+    chown "${RUNNER_USER}:staff" "${RUNNER_HOME}"
+    chmod 755 "${RUNNER_HOME}"
+}
+
 create_runner_user_macos
-
-if [ ! -d "${RUNNER_HOME}" ]; then
-    error_exit "Home directory ${RUNNER_HOME} is missing after user creation"
-fi
-
-chown "${RUNNER_USER}:staff" "${RUNNER_HOME}" 2>/dev/null || true
+ensure_runner_home
 
 log "Setting up runner in ${RUNNER_HOME}/actions-runner"
 sudo -u "${RUNNER_USER}" bash << EOF
