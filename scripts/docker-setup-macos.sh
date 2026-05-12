@@ -377,31 +377,53 @@ restart_github_runner() {
     fi
 }
 
+# Run a docker subcommand the same way docker_engine_ready does:
+# as $bu with Homebrew's bin dirs in PATH (so the CLI is found under sudo).
+run_docker_as_bu() {
+    local bu="$1"
+    shift
+    local pp
+    pp="$(docker_macos_probe_path)"
+    if [[ $EUID -eq 0 ]]; then
+        sudo -u "$bu" -H env PATH="$pp" docker "$@"
+    else
+        PATH="$pp:${PATH:-}" docker "$@"
+    fi
+}
+
 verify_installation() {
     print_status "Verifying Docker installation..."
+    local bu
+    bu="$(brew_invoking_user)"
 
-    if ! command -v docker &>/dev/null; then
-        print_error "docker CLI not found in PATH after install."
+    local pp
+    pp="$(docker_macos_probe_path)"
+    local cli_ok=false
+    if [[ $EUID -eq 0 ]]; then
+        sudo -u "$bu" -H env PATH="$pp" command -v docker &>/dev/null && cli_ok=true
+    else
+        PATH="$pp:${PATH:-}" command -v docker &>/dev/null && cli_ok=true
+    fi
+
+    if [[ "$cli_ok" = false ]]; then
+        print_error "docker CLI not found for user '$bu' with probe PATH ($pp)."
+        print_status "Try: sudo -u $bu -H env PATH=\"$pp\" command -v docker"
         return 1
     fi
 
     local docker_version
-    docker_version=$(docker --version)
+    docker_version=$(run_docker_as_bu "$bu" --version)
     print_success "Docker version: $docker_version"
 
     local compose_version
-    compose_version=$(docker compose version)
+    compose_version=$(run_docker_as_bu "$bu" compose version)
     print_success "Docker Compose version: $compose_version"
 
-    if [[ $EUID -ne 0 ]]; then
-        print_status "Testing Docker with hello-world container..."
-        if docker run --rm hello-world >/dev/null 2>&1; then
-            print_success "Docker test completed successfully"
-        else
-            print_warning "Docker test failed, but installation may still be complete once the engine is fully up"
-        fi
+    print_status "Testing Docker with hello-world container (as user '$bu')..."
+    if run_docker_as_bu "$bu" run --rm hello-world >/dev/null 2>&1; then
+        print_success "Docker test completed successfully"
     else
-        print_status "Skipping Docker test (running as root); test as a normal user: docker run hello-world"
+        print_warning "Docker test failed, but installation may still be complete once the engine is fully up"
     fi
 }
 
