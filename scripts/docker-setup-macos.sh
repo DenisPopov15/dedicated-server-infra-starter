@@ -8,10 +8,12 @@
 #   DOCKER_SETUP_MACOS_SKIP_IF_INSTALLED=1
 #
 # Usage: ./docker-setup-macos.sh [user1] [user2] [user3] ...
-# If no usernames are provided, current user will be added to the docker group
-# when that step runs (see main: same conditions as docker-setup.sh for Ubuntu).
+# Docker group step (see main): non-root with no args → current user ($USER).
+# Root with no args → SUDO_USER if set and not root; else user "github" if it exists; else error.
 # Examples:
 #   ./docker-setup-macos.sh
+#   sudo ./docker-setup-macos.sh openclawagent   # explicit user(s) for docker group
+#   sudo ./docker-setup-macos.sh                 # adds SUDO_USER (e.g. openclawagent) when you used sudo from that account
 #   DOCKER_SETUP_MACOS_SKIP_IF_INSTALLED=1 ./docker-setup-macos.sh   # group steps only if docker exists
 #   ./docker-setup-macos.sh alice bob
 #   sudo ./docker-setup-macos.sh root github deploy   # uses SUDO_USER for Homebrew when needed
@@ -210,15 +212,22 @@ install_docker_desktop() {
 
 # Probe the Docker engine as the user who owns the Docker Desktop session.
 # On macOS, Docker Desktop's socket (~/.docker/run/docker.sock) and CLI context
-# (desktop-linux) are per-user. When the script runs via sudo, root has neither
-# the socket nor the context — so `docker info` from root will fail even though
-# Docker Desktop is fully up in the GUI user's session. Check as that user.
+# (desktop-linux) are per-user; when the script runs via sudo, probe as that user,
+# not as root. Non-interactive `sudo -u user -H` does not load .zprofile/.bash_profile, so PATH
+# is often just /usr/bin:/bin:... and omits Homebrew. The GUI Terminal finds
+# `docker` in /opt/homebrew/bin or /usr/local/bin; the probe must match that.
+docker_macos_probe_path() {
+    printf '%s' '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin'
+}
+
 docker_engine_ready() {
     local bu="$1"
+    local pp
+    pp="$(docker_macos_probe_path)"
     if [[ $EUID -eq 0 ]]; then
-        sudo -u "$bu" -H docker info &>/dev/null
+        sudo -u "$bu" -H env PATH="$pp" docker info &>/dev/null
     else
-        docker info &>/dev/null
+        PATH="$pp:${PATH:-}" docker info &>/dev/null
     fi
 }
 
@@ -232,10 +241,29 @@ start_docker_service() {
         open -a Docker || true
     fi
 
-    print_status "Waiting for Docker engine to accept connections (up to 180s) — probing as user '$bu'..."
+    print_status "Waiting for Docker engine to accept connections (up to 180s) — probing as user '$bu' (PATH includes Homebrew bin dirs)..."
     local wait_time=0
     local max_wait=180
+    local warned_no_cli=false
     while [[ $wait_time -lt $max_wait ]]; do
+        local pp
+        pp="$(docker_macos_probe_path)"
+        if [[ "$warned_no_cli" = false ]] && [[ $wait_time -ge 15 ]]; then
+            local ok_cli=false
+            if [[ $EUID -eq 0 ]]; then
+                if sudo -u "$bu" -H env PATH="$pp" command -v docker &>/dev/null; then
+                    ok_cli=true
+                fi
+            else
+                if PATH="$pp:${PATH:-}" command -v docker &>/dev/null; then
+                    ok_cli=true
+                fi
+            fi
+            if [[ "$ok_cli" = false ]]; then
+                print_warning "docker CLI not found with probe PATH (Homebrew bin dirs first). A GUI Terminal may still find docker via your shell profile."
+            fi
+            warned_no_cli=true
+        fi
         if docker_engine_ready "$bu"; then
             print_success "Docker engine is running (as user '$bu')"
             return 0
@@ -247,8 +275,8 @@ start_docker_service() {
         wait_time=$((wait_time + 3))
     done
     print_warning "Docker did not become ready within ${max_wait}s (probing as user '$bu')."
-    print_status "Sanity-check the daemon manually:"
-    echo "  sudo -u $bu -H docker info"
+    print_status "Sanity-check the daemon manually (same PATH as this script's probe):"
+    echo "  sudo -u $bu -H env PATH=\"$(docker_macos_probe_path)\" docker info"
     print_status "If Docker Desktop is running in the GUI but root still cannot reach it, enable"
     print_status "  Docker Desktop → Settings → Advanced → 'Allow the default Docker socket to be used'"
     print_status "so /var/run/docker.sock is symlinked for system-wide access."
@@ -270,13 +298,16 @@ add_users_to_docker_group() {
 
     if [[ ${#users[@]} -eq 0 ]]; then
         if [[ $EUID -eq 0 ]]; then
-            if id "github" &>/dev/null; then
-                print_status "Detected GitHub Actions runner user 'github', adding to docker group automatically"
+            if [[ -n "${SUDO_USER:-}" ]] && [[ "$SUDO_USER" != root ]] && id "$SUDO_USER" &>/dev/null; then
+                print_status "No usernames given: adding invoking user '$SUDO_USER' to docker group (from SUDO_USER)."
+                users=("$SUDO_USER")
+            elif id "github" &>/dev/null; then
+                print_status "No SUDO_USER fallback: detected user 'github', adding to docker group (GitHub Actions runner)."
                 users=("github")
             else
-                print_error "When running as root, you must specify at least one username as an argument."
+                print_error "When running as root, pass at least one username, or run via sudo from a normal account so SUDO_USER is set."
                 print_status "Usage: $0 [user1] [user2] [user3] ..."
-                print_status "Example: $0 alice bob github"
+                print_status "Example: $0 openclawagent"
                 exit 1
             fi
         else
