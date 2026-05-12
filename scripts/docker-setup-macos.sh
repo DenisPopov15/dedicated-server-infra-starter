@@ -208,6 +208,20 @@ install_docker_desktop() {
     print_success "Docker Desktop cask installed"
 }
 
+# Probe the Docker engine as the user who owns the Docker Desktop session.
+# On macOS, Docker Desktop's socket (~/.docker/run/docker.sock) and CLI context
+# (desktop-linux) are per-user. When the script runs via sudo, root has neither
+# the socket nor the context — so `docker info` from root will fail even though
+# Docker Desktop is fully up in the GUI user's session. Check as that user.
+docker_engine_ready() {
+    local bu="$1"
+    if [[ $EUID -eq 0 ]]; then
+        sudo -u "$bu" -H docker info &>/dev/null
+    else
+        docker info &>/dev/null
+    fi
+}
+
 start_docker_service() {
     print_status "Starting Docker Desktop (daemon)..."
     local bu
@@ -218,12 +232,12 @@ start_docker_service() {
         open -a Docker || true
     fi
 
-    print_status "Waiting for Docker engine to accept connections (up to 180s)..."
+    print_status "Waiting for Docker engine to accept connections (up to 180s) — probing as user '$bu'..."
     local wait_time=0
     local max_wait=180
     while [[ $wait_time -lt $max_wait ]]; do
-        if docker info &>/dev/null; then
-            print_success "Docker engine is running"
+        if docker_engine_ready "$bu"; then
+            print_success "Docker engine is running (as user '$bu')"
             return 0
         fi
         if [[ $((wait_time % 15)) -eq 0 ]] && [[ $wait_time -gt 0 ]]; then
@@ -232,8 +246,12 @@ start_docker_service() {
         sleep 3
         wait_time=$((wait_time + 3))
     done
-    print_warning "Docker did not become ready within ${max_wait}s."
-    print_status "Try: log in at the console, open Docker from Applications, accept the license, then re-run verification with: docker info"
+    print_warning "Docker did not become ready within ${max_wait}s (probing as user '$bu')."
+    print_status "Sanity-check the daemon manually:"
+    echo "  sudo -u $bu -H docker info"
+    print_status "If Docker Desktop is running in the GUI but root still cannot reach it, enable"
+    print_status "  Docker Desktop → Settings → Advanced → 'Allow the default Docker socket to be used'"
+    print_status "so /var/run/docker.sock is symlinked for system-wide access."
     return 0
 }
 
