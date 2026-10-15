@@ -1,12 +1,14 @@
 #!/bin/bash
 
-# Docker and Docker Compose Installation Script for Ubuntu 22.04 LTS and 24.04 LTS
+# Docker and Docker Compose Installation Script for Ubuntu 22.04 / 24.04 / 26.04 LTS
 # Usage: ./install_docker.sh [user1] [user2] [user3] ...
 # If no usernames are provided, current user will be added to docker group
 # Examples:
 #   ./install_docker.sh                    # Add current user
 #   ./install_docker.sh alice bob          # Add alice and bob
 #   ./install_docker.sh root github deploy # Add multiple users including root
+#
+# Non-interactive (e.g. curl | bash over SSH): confirmation prompts default to yes.
 
 set -e  # Exit on any error
 
@@ -34,15 +36,21 @@ print_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# Prompt y/N; when stdin is not a TTY (remote curl|bash), auto-accept yes.
+confirm_yes() {
+    local prompt="$1"
+    if [[ ! -t 0 ]]; then
+        print_status "Non-interactive session detected; answering yes to: ${prompt}"
+        return 0
+    fi
+    read -p "${prompt} (y/N): " -n 1 -r
+    echo
+    [[ $REPLY =~ ^[Yy]$ ]]
+}
+
 # Function to check if running as root
 check_root() {
     if [[ $EUID -eq 0 ]]; then
-        # print_warning "This script is running as root. It's recommended to run as a regular user with sudo privileges."
-        # read -p "Do you want to continue? (y/N): " -n 1 -r
-        # echo
-        # if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        #     exit 1
-        # fi
         print_status "Running as root user."
     fi
 }
@@ -51,9 +59,7 @@ check_root() {
 check_existing_docker() {
     if command -v docker &> /dev/null; then
         print_warning "Docker is already installed: $(docker --version)"
-        read -p "Do you want to continue and potentially reinstall/update? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        if ! confirm_yes "Do you want to continue and potentially reinstall/update?"; then
             print_status "Skipping Docker installation. Will only add users to docker group if specified."
             return 1
         fi
@@ -140,20 +146,19 @@ wait_for_apt_lock() {
 
 # Function to check Ubuntu version
 check_ubuntu_version() {
-    local os_info=$(lsb_release -d | cut -f2)
+    local os_info
+    os_info=$(lsb_release -d | cut -f2)
     local is_supported=false
-    
-    # Check for supported Ubuntu versions
-    if grep -q "Ubuntu 22.04" /etc/os-release || grep -q "Ubuntu 24.04" /etc/os-release; then
+
+    # Official Docker Engine apt support: 22.04, 24.04, 26.04 (resolute)
+    if grep -qE "Ubuntu (22\.04|24\.04|26\.04)" /etc/os-release; then
         is_supported=true
     fi
-    
+
     if [[ "$is_supported" = false ]]; then
-        print_warning "This script is designed for Ubuntu 22.04 LTS and 24.04 LTS. Your system might not be compatible."
+        print_warning "This script is designed for Ubuntu 22.04 / 24.04 / 26.04 LTS. Your system might not be compatible."
         print_status "Detected OS: $os_info"
-        read -p "Do you want to continue anyway? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        if ! confirm_yes "Do you want to continue anyway?"; then
             exit 1
         fi
     else
@@ -354,7 +359,7 @@ show_post_install_instructions() {
 # Main installation function
 main() {
     echo "========================================"
-    echo "Docker Installation Script for Ubuntu 22.04 LTS and 24.04 LTS"
+    echo "Docker Installation Script for Ubuntu 22.04 / 24.04 / 26.04 LTS"
     echo "========================================"
     echo
 
