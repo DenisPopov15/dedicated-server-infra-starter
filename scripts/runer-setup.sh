@@ -38,7 +38,7 @@ ORG_NAME="$1"
 TOKEN="$2"
 LABELS="$3"
 RUNNER_USER="github"
-RUNNER_VERSION="2.321.0"  # Using a stable version
+RUNNER_VERSION="2.329.0"  # Using a stable version
 RUNNER_HOME="/home/${RUNNER_USER}"
 
 # Detect architecture
